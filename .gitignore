@@ -1,0 +1,40 @@
+# 돌봄톡 (CareTalk) .gitignore
+
+# 환경변수 (절대 커밋 금지)
+.env
+.env.local
+.env.production
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+.venv/
+env/
+ENV/
+
+# 데이터베이스 (런타임 생성)
+db/caretalk.db
+db/caretalk.db-journal
+db/caretalk.db-wal
+db/caretalk.db-shm
+_db_backup/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# 로그
+*.log
+server.log

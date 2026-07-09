@@ -1,0 +1,23 @@
+# 돌봄톡 (CareTalk) MCP 서버 - 의존성 패키지
+# ============================================
+# Python 3.10+ (개발/검증 환경: 3.10.6)
+#
+# ⚠️ 서버 본체(server.py)와 Mock 모드는 외부 의존성이 전혀 없습니다.
+#    표준 라이브러리(http.server, sqlite3, json)만으로 완전 동작합니다.
+#        python server.py --mock --port 9000
+#
+# 아래 패키지는 "실제(비 Mock) 모드"에서만 필요합니다.
+# 설치: pip install -r requirements.txt
+
+# OpenAI GPT-4o-mini API 클라이언트 (감정 분석·건강 키워드·위험 컨텍스트 확인)
+# 미설치 시 자동으로 규칙기반(Mock) 분석으로 폴백합니다.
+openai>=1.0.0
+
+# 카카오 REST API 호출용 (카카오 로그인, 알림톡 발송)
+requests>=2.28.0
+
+# 환경 변수(.env) 로드 (선택)
+python-dotenv>=1.0.0
+
+# ── 본선 확장 시 추가 예정 ──────────────────────────────────────
+# google-cloud-vision  # OCR 건강 데이터 (혈압계·혈당계 사진 판독)

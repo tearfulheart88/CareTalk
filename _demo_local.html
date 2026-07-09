@@ -1,0 +1,293 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>돌봄톡 로컬 데모</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: "Apple SD Gothic Neo", "Malgun Gothic", sans-serif;
+    background: #e9ebf0; color: #222; padding: 24px;
+    display: flex; flex-wrap: wrap; gap: 28px; justify-content: center; align-items: flex-start;
+  }
+  .col { display: flex; flex-direction: column; align-items: center; gap: 12px; }
+  .col h2 { font-size: 15px; color: #555; font-weight: 700; }
+  .status { font-size: 12px; padding: 4px 10px; border-radius: 12px; background: #ddd; color: #555; }
+  .status.ok { background: #d6f5dd; color: #137a32; }
+  .status.err { background: #fadbdb; color: #b3261e; }
+
+  /* phone frame */
+  .phone {
+    width: 360px; height: 720px; background: #abc1d1; border-radius: 36px;
+    box-shadow: 0 12px 40px rgba(0,0,0,.25); overflow: hidden;
+    display: flex; flex-direction: column; border: 8px solid #1a1a1a;
+  }
+  .bar {
+    background: #9bb3c7; padding: 12px 16px; display: flex; align-items: center; gap: 8px;
+    font-weight: 700; font-size: 15px; color: #1a2733; flex-shrink: 0;
+  }
+  .bar .back { font-size: 18px; }
+  .chat {
+    flex: 1; overflow-y: auto; padding: 14px 12px; display: flex; flex-direction: column; gap: 10px;
+  }
+  .chat::-webkit-scrollbar { width: 6px; }
+  .chat::-webkit-scrollbar-thumb { background: rgba(0,0,0,.15); border-radius: 3px; }
+
+  .row { display: flex; gap: 6px; align-items: flex-end; }
+  .row.me { justify-content: flex-end; }
+  .avatar { width: 36px; height: 36px; border-radius: 12px; background: #ffe14d;
+    display: flex; align-items: center; justify-content: center; font-size: 18px; flex-shrink: 0; }
+  .bubble {
+    max-width: 230px; padding: 10px 12px; border-radius: 14px; font-size: 14px; line-height: 1.5;
+    white-space: pre-wrap; word-break: break-word;
+  }
+  .bot .bubble { background: #fff; border-top-left-radius: 4px; }
+  .me .bubble { background: #fee500; border-top-right-radius: 4px; }
+  .name { font-size: 11px; color: #4a5a68; margin: 0 0 2px 42px; }
+
+  .quick { display: flex; flex-wrap: wrap; gap: 6px; margin: 2px 0 4px 42px; }
+  .quick button {
+    background: #fff; border: 1px solid #c9d4dd; color: #2b4a63; border-radius: 16px;
+    padding: 6px 12px; font-size: 12.5px; cursor: pointer; font-weight: 600;
+  }
+  .quick button:hover { background: #eaf2f8; }
+
+  /* cards */
+  .card { background: #fff; border-radius: 14px; overflow: hidden; max-width: 250px; border-top-left-radius: 4px; }
+  .card .thumb { height: 96px; background: linear-gradient(135deg,#ffd86b,#ff9f68);
+    display: flex; align-items: center; justify-content: center; font-size: 40px; }
+  .card .body { padding: 12px; }
+  .card .title { font-weight: 700; font-size: 14px; margin-bottom: 6px; }
+  .card .desc { font-size: 12.5px; color: #444; white-space: pre-wrap; line-height: 1.55; }
+  .card .btns { border-top: 1px solid #eee; }
+  .card .btns div { padding: 11px; text-align: center; font-size: 13px; color: #2b6cb0;
+    font-weight: 600; border-bottom: 1px solid #f0f0f0; }
+
+  .listcard { background: #fff; border-radius: 14px; overflow: hidden; max-width: 250px; border-top-left-radius: 4px; }
+  .listcard .lc-head { padding: 13px 14px; font-weight: 700; font-size: 14px; background: #fafbfc; border-bottom: 1px solid #eee; white-space: pre-wrap; }
+  .listcard .lc-item { padding: 11px 14px; border-bottom: 1px solid #f2f2f2; }
+  .listcard .lc-item .t { font-size: 13px; font-weight: 600; }
+  .listcard .lc-item .d { font-size: 12px; color: #777; margin-top: 2px; }
+
+  .alert .bubble { background: #ffe3e3; border: 1px solid #ff8a8a; color: #a3160f; font-weight: 600; }
+
+  /* controls */
+  .panel { width: 300px; background: #fff; border-radius: 16px; padding: 18px; box-shadow: 0 6px 24px rgba(0,0,0,.08); }
+  .panel h2 { font-size: 16px; margin-bottom: 4px; }
+  .panel p.sub { font-size: 12px; color: #888; margin-bottom: 14px; }
+  .panel .step { display: block; width: 100%; text-align: left; background: #f5f7fa; border: 1px solid #e3e8ee;
+    border-radius: 10px; padding: 11px 13px; margin-bottom: 8px; cursor: pointer; font-size: 13px; }
+  .panel .step:hover { background: #eaf0f6; }
+  .panel .step b { display: block; font-size: 13.5px; margin-bottom: 2px; color: #222; }
+  .panel .step span { color: #777; font-size: 11.5px; }
+  .panel .reset { width: 100%; margin-top: 6px; background: #fff; border: 1px solid #ddd; border-radius: 10px;
+    padding: 9px; cursor: pointer; font-size: 12px; color: #666; }
+  .endpoint { font-size: 11px; color: #999; margin-top: 12px; text-align: center; }
+  .typing { font-size: 12px; color: #888; margin-left: 42px; }
+</style>
+</head>
+<body>
+
+<div class="panel">
+  <h2>돌봄톡 로컬 데모</h2>
+  <p class="sub">아래 버튼 → 로컬 MCP 서버 <code>/mcp</code> 실호출 → 응답을 카카오톡처럼 렌더</p>
+  <span id="status" class="status">서버 확인 중…</span>
+
+  <div style="height:14px"></div>
+
+  <button class="step" onclick="step1()">
+    <b>① 아침 안부 확인</b><span>daily_checkin · initiate → Widget A</span></button>
+  <button class="step" onclick="step2()">
+    <b>② 어르신 응답 + 감정분석</b><span>daily_checkin · analyze</span></button>
+  <button class="step" onclick="step3()">
+    <b>③ 혈압 기록 (자연어)</b><span>health_log · parse "135에 85"</span></button>
+  <button class="step" onclick="step4()">
+    <b>④ 추억 회상 대화</b><span>reminiscence_chat · chat</span></button>
+  <button class="step" onclick="step5()">
+    <b>⑤ 🚨 응급 감지 (RED)</b><span>emergency_detect · "숨이 안 쉬어져"</span></button>
+  <button class="step" onclick="step6()">
+    <b>⑥ 가족용 주간 리포트</b><span>family_report_widget → Widget B</span></button>
+  <button class="step" onclick="step7()">
+    <b>⑦ ✅ 판정 개선 확인</b><span>오탐/과소판정 수정 검증 (7/2)</span></button>
+  <button class="step" onclick="step8()">
+    <b>⑧ 🏥 무료 건강 서비스 안내</b><span>health_facility · 기기연동 입력→보건소 추천→알림</span></button>
+
+  <button class="reset" onclick="resetChat()">대화 초기화</button>
+  <div class="endpoint" id="ep">http://127.0.0.1:9123/mcp</div>
+</div>
+
+<div class="col">
+  <h2>📱 어르신 카카오톡 화면</h2>
+  <div class="phone">
+    <div class="bar"><span class="back">‹</span> 돌봄톡 🤝</div>
+    <div class="chat" id="chat"></div>
+  </div>
+</div>
+
+<script>
+const BASE = location.hash.slice(1) || "http://127.0.0.1:9123";
+document.getElementById("ep").textContent = BASE + "/mcp";
+const chat = document.getElementById("chat");
+const statusEl = document.getElementById("status");
+
+async function callTool(name, args) {
+  const payload = { jsonrpc:"2.0", id:1, method:"tools/call", params:{ name, arguments: args } };
+  const r = await fetch(BASE + "/mcp", {
+    method:"POST", headers:{ "Content-Type":"application/json" }, body: JSON.stringify(payload)
+  });
+  const res = await r.json();
+  return JSON.parse(res.result.content[0].text);
+}
+
+async function checkServer() {
+  try {
+    const r = await fetch(BASE + "/");
+    const info = await r.json();
+    statusEl.textContent = "● 서버 연결됨 (mock=" + info.mock_mode + ", tool " + info.tools.length + "개)";
+    statusEl.className = "status ok";
+  } catch (e) {
+    statusEl.textContent = "✕ 서버 미연결 — server.py 먼저 실행하세요";
+    statusEl.className = "status err";
+  }
+}
+checkServer();
+
+function scroll() { chat.scrollTop = chat.scrollHeight; }
+function resetChat() { chat.innerHTML = ""; }
+
+function botName(n) { const e=document.createElement("div"); e.className="name"; e.textContent=n; chat.appendChild(e); }
+function botText(text, alert) {
+  const row=document.createElement("div"); row.className="row bot"+(alert?" alert":"");
+  row.innerHTML='<div class="avatar">🤝</div><div class="bubble"></div>';
+  row.querySelector(".bubble").textContent=text; chat.appendChild(row); scroll();
+}
+function meText(text) {
+  const row=document.createElement("div"); row.className="row me";
+  row.innerHTML='<div class="bubble"></div>'; row.querySelector(".bubble").textContent=text;
+  chat.appendChild(row); scroll();
+}
+function quickReplies(qrs) {
+  if(!qrs||!qrs.length) return;
+  const box=document.createElement("div"); box.className="quick";
+  qrs.forEach(q=>{ const b=document.createElement("button"); b.textContent=q.label;
+    b.onclick=()=>meText(q.messageText||q.label); box.appendChild(b); });
+  chat.appendChild(box); scroll();
+}
+function renderBasicCard(c) {
+  const row=document.createElement("div"); row.className="row bot";
+  const card=document.createElement("div"); card.className="card";
+  let btns=(c.buttons||[]).map(b=>`<div>${b.label}</div>`).join("");
+  card.innerHTML=`<div class="thumb">👵</div><div class="body"><div class="title"></div><div class="desc"></div></div>`+(btns?`<div class="btns">${btns}</div>`:"");
+  card.querySelector(".title").textContent=c.title||"";
+  card.querySelector(".desc").textContent=c.description||"";
+  row.innerHTML='<div class="avatar">🤝</div>'; row.appendChild(card); chat.appendChild(row); scroll();
+}
+function renderListCard(c) {
+  const row=document.createElement("div"); row.className="row bot";
+  const lc=document.createElement("div"); lc.className="listcard";
+  const head=document.createElement("div"); head.className="lc-head";
+  head.textContent=c.title||(c.header&&c.header.title)||"목록"; lc.appendChild(head);
+  (c.items||[]).forEach(it=>{ const d=document.createElement("div"); d.className="lc-item";
+    d.innerHTML='<div class="t"></div><div class="d"></div>';
+    d.querySelector(".t").textContent=it.title||""; d.querySelector(".d").textContent=it.description||"";
+    lc.appendChild(d); });
+  row.innerHTML='<div class="avatar">🤝</div>'; row.appendChild(lc); chat.appendChild(row); scroll();
+}
+// 카카오 template(outputs[]) 렌더러
+function renderTemplate(tpl) {
+  const outs=(tpl.template&&tpl.template.outputs)||[];
+  outs.forEach(o=>{
+    if(o.simpleText) botText(o.simpleText.text);
+    if(o.basicCard) renderBasicCard(o.basicCard);
+    if(o.listCard) renderListCard(o.listCard);
+  });
+  const qr=(tpl.template&&tpl.template.quickReplies);
+  if(qr) quickReplies(qr);
+}
+
+// ── 시나리오 ──
+async function step1(){
+  const r=await callTool("daily_checkin",{user_id:"demo",action:"initiate",nickname:"순자"});
+  botName("돌봄톡");
+  if(r.message_json) renderTemplate(r.message_json);
+  // 오늘의 돌봄 위젯도 함께
+  const w=await callTool("daily_care_widget",{user_id:"demo",nickname:"순자",sentiment:"positive"});
+  renderTemplate(w);
+}
+async function step2(){
+  meText("오늘 날씨가 좋아서 산책 다녀왔어요. 기분 좋네");
+  const r=await callTool("daily_checkin",{user_id:"demo",action:"analyze",message:"오늘 날씨가 좋아서 산책 다녀왔어요. 기분 좋네"});
+  botName("돌봄톡");
+  botText("감정 분석: "+r.sentiment+" → "+r.follow_up_action);
+}
+async function step3(){
+  meText("오늘 혈압 135에 85 나왔어");
+  const r=await callTool("health_log",{user_id:"demo",action:"parse",message:"오늘 혈압 135에 85 나왔어"});
+  botName("돌봄톡");
+  let t="혈압을 기록했어요.\n";
+  (r.results||[]).forEach(x=>{ t+=`\n• ${x.label}: ${x.value}${x.unit} (${x.status})\n  ${x.advice}`; });
+  botText(t.trim(), (r.results||[]).some(x=>x.status!=="normal"));
+}
+async function step4(){
+  meText("예전에 시장에서 장사하던 생각이 나네");
+  const r=await callTool("reminiscence_chat",{user_id:"demo",action:"chat",message:"예전에 시장에서 장사하던 생각이 나네",sentiment:"neutral"});
+  botName("돌봄톡");
+  botText(r.response_text);
+  if(r.topic_prompt) botText("💬 "+r.topic_prompt);
+}
+async function step5(){
+  meText("가슴이 너무 아프고 숨이 안 쉬어져");
+  const r=await callTool("emergency_detect",{user_id:"demo",action:"detect",message:"가슴이 너무 아프고 숨이 안 쉬어져"});
+  botName("돌봄톡 · 응급");
+  botText("위험도: "+r.risk_level.toUpperCase()+" / 감지: "+(r.detected_keywords||[]).join(", "), true);
+  botText(r.recommended_action, true);
+  botText("📨 알림 대상: "+(r.notify_targets||[]).join(" · "), true);
+}
+async function step6(){
+  botName("돌봄톡 · 가족 채널");
+  const r=await callTool("family_report_widget",{user_id:"demo",nickname:"순자",days:7});
+  renderTemplate(r);
+}
+async function step7(){
+  botName("판정 개선 검증 (실서버 호출)");
+  // 1) 부정어: "안 좋아요"는 이제 negative
+  meText("몸이 안 좋아요");
+  let r=await callTool("daily_checkin",{user_id:"demo",action:"analyze",message:"몸이 안 좋아요"});
+  botText("감정: "+r.sentiment+" / 상태: "+r.status+"\n(수정 전엔 positive로 오판)", r.status==="concern");
+  // 2) RED 오탐: 일상 표현
+  meText("혼자 살려고 이사왔어");
+  r=await callTool("emergency_detect",{user_id:"demo",action:"detect",message:"혼자 살려고 이사왔어"});
+  botText("위험도: "+r.risk_level.toUpperCase()+"\n(수정 전엔 '살려' 키워드로 RED 오탐 → 119 알림)");
+  // 3) RED 유지: 안심 표현이 섞여도 하향 금지
+  meText("숨이 안 쉬어져... 그래도 괜찮아지겠지");
+  r=await callTool("emergency_detect",{user_id:"demo",action:"detect",message:"숨이 안 쉬어져... 그래도 괜찮아지겠지"});
+  botText("위험도: "+r.risk_level.toUpperCase()+" / 알림: "+(r.notify_targets||[]).join("·")+"\n(수정 전엔 '괜찮아' 때문에 YELLOW로 하향)", r.risk_level==="red");
+  // 4) 무응답 시간 계산 (시간대 버그)
+  r=await callTool("emergency_detect",{user_id:"demo",action:"silence"});
+  botText("방금 활동 직후 무응답 경과: "+r.hours_silent+"시간\n(수정 전엔 UTC 혼용으로 항상 +9시간)");
+}
+async function step8(){
+  botName("돌봄톡 · 무료 건강 서비스");
+  // 1) 혈압계 기기 연동 입력 (source=device)
+  botText("📟 혈압계에서 측정값이 자동으로 들어왔어요 (기기 연동, source=device)");
+  let r=await callTool("health_log",{user_id:"demo",action:"log",data_type:"systolic",value:152,nickname:"순자",source:"device"});
+  botText(r.label+" "+r.value+r.unit+" → "+r.status+"\n"+r.advice, r.status!=="normal");
+  if(r.facility_tip) botText("💡 "+r.facility_tip);
+  // 2) 근처 보건소 검색
+  meText("근처 보건소 알려줘 (마포)");
+  r=await callTool("health_facility",{user_id:"demo",action:"search",region:"마포"});
+  renderListCard({title:"🏥 마포 무료 건강 서비스", items:(r.facilities||[]).map(f=>({
+    title:f.name+" ("+f.type+")", description:"☎ "+f.phone+" · "+(f.free_services||[]).slice(0,2).join(", ")}))});
+  // 3) 건강 기록 기반 맞춤 추천
+  r=await callTool("health_facility",{user_id:"demo",action:"recommend",region:"마포"});
+  const rec=(r.recommendations||[])[0];
+  if(rec) botText("🔎 맞춤 추천: "+rec.reason+"\n→ '"+rec.recommended_program+"' ("+rec.cost+")");
+  // 4) 알림 메시지 (카카오 v2.0)
+  r=await callTool("health_facility",{user_id:"demo",action:"notify",nickname:"순자",region:"마포"});
+  botName("돌봄톡 · 정기 알림");
+  if(r.message_json) renderTemplate(r.message_json);
+}
+</script>
+</body>
+</html>
