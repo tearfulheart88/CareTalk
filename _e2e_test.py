@@ -5,7 +5,7 @@
 서버의 execute_tool 함수를 직접 import하여 모든 tool을 검증한다.
 DB 충돌을 피하기 위해 임시 DB 경로를 사용한다.
 """
-import os, sys, json, tempfile, shutil
+import asyncio, os, sys, json, tempfile, shutil
 
 # Windows 기본 콘솔(cp949)에서도 이모지/한글 테스트 로그가 깨지지 않게 한다.
 try:
@@ -59,6 +59,8 @@ test("필수 Tool 포함", all(n in tool_names for n in [
     "daily_care_widget", "health_log", "reminiscence_chat", "family_report_widget",
     "health_facility"
 ]), f"got {tool_names}")
+registered_tools = asyncio.run(server.mcp.list_tools())
+test("공식 FastMCP Tool 8개 등록", len(registered_tools) == 8, str([t.name for t in registered_tools]))
 
 # === 2. daily_checkin ===
 print("\n[2] daily_checkin")
@@ -85,7 +87,8 @@ test("no_response 응답 있음", "status" in r, str(r)[:100])
 print("\n[3] emergency_detect")
 r = execute_tool("emergency_detect", {"user_id":"senior_001","action":"detect","message":"쓰러졌어요. 숨이 안 쉬어져요. 살려주세요"})
 test("detect(RED) risk=red", r.get("risk_level") == "red", str(r)[:100])
-test("detect(RED) notify에 119 포함", "119" in r.get("notify_targets",[]), str(r)[:100])
+test("detect(RED) 119 안내", r.get("emergency_contact") == "119", str(r)[:100])
+test("detect(RED) 출동 완료로 오인시키지 않음", r.get("dispatch_performed") is False, str(r)[:100])
 
 r = execute_tool("emergency_detect", {"user_id":"senior_001","action":"detect","message":"아이고 방금 넘어졌어 너무 아파서 못 일어나겠어"})
 test("detect(fall cannot get up) risk=red", r.get("risk_level") == "red", str(r)[:100])
@@ -220,6 +223,8 @@ r = execute_tool("emergency_detect", {"user_id":"senior_001","action":"detect","
 test("'숨이 안 쉬어져+괜찮아지겠지' → red 유지", r.get("risk_level") == "red", str(r)[:100])
 r = execute_tool("emergency_detect", {"user_id":"senior_001","action":"detect","message":"살려주세요 가슴이 너무 아파요"})
 test("'살려주세요' → red 유지", r.get("risk_level") == "red", str(r)[:100])
+r = execute_tool("emergency_detect", {"user_id":"senior_001","action":"detect","message":"숨을 못 쉬겠어요"})
+test("'숨을 못 쉬겠어요' → red", r.get("risk_level") == "red", str(r)[:100])
 r = execute_tool("emergency_detect", {"user_id":"senior_001","action":"detect","message":"어지러워도 괜찮아 걱정 마"})
 test("'어지러워+괜찮아' → none (안심 표현 YELLOW 하향)", r.get("risk_level") == "none", str(r)[:100])
 
@@ -282,7 +287,39 @@ test("기기 연동 입력 source=device", r.get("source") == "device", str(r)[:
 r = execute_tool("health_log", {"user_id":"senior_001","action":"log","data_type":"systolic","value":150})
 test("이상 수치 → 보건소 안내(facility_tip)", "보건소" in r.get("facility_tip",""), str(r)[:100])
 
-# === 17. 정리 ===
+# === 17. 회귀: 배포/안전 하드닝 ===
+print("\n[17] 회귀: 배포/안전 하드닝")
+old_key = os.environ.pop("OPENAI_API_KEY", None)
+set_mock_mode(False)
+r = execute_tool("emergency_detect", {"user_id":"senior_safe","action":"detect","message":"숨을 못 쉬겠어요 살려주세요"})
+test("OpenAI 키 없음에도 RED 유지", r.get("risk_level") == "red", str(r)[:140])
+test("OpenAI 키 없음은 rules 폴백 표시", r.get("analysis_source") == "rules" and r.get("mock_mode") is True, str(r)[:140])
+
+import tools.emergency_detect as emergency_module
+original_context_check = emergency_module._gpt_context_check
+emergency_module._gpt_context_check = lambda message, context=None: {
+    "is_real_emergency": False,
+    "adjusted_level": "none",
+    "explanation": "테스트용 하향 응답",
+    "analysis_available": True,
+}
+r = execute_tool("emergency_detect", {"user_id":"senior_safe","action":"detect","message":"의식을 잃고 숨을 못 쉬어요"})
+test("LLM이 내려도 명시적 RED 안전 하한 유지", r.get("risk_level") == "red", str(r)[:140])
+emergency_module._gpt_context_check = original_context_check
+set_mock_mode(True)
+if old_key is not None:
+    os.environ["OPENAI_API_KEY"] = old_key
+
+r = execute_tool("health_log", {"user_id":"senior_001","action":"log","data_type":"temperature","value":float("nan")})
+test("건강 수치 NaN 저장 차단", "error" in r, str(r)[:100])
+r = execute_tool("health_log", {"user_id":"senior_001","action":"log","data_type":"temperature","value":100})
+test("건강 수치 명백한 단위 오류 차단", "error" in r, str(r)[:100])
+r = execute_tool("emergency_detect", {"user_id":"senior_001","action":"detect"})
+test("응급 detect 메시지 누락 차단", "error" in r, str(r)[:100])
+r = execute_tool("daily_checkin", {"user_id":"x" * 129,"action":"no_response"})
+test("과도하게 긴 사용자 ID 차단", "error" in r, str(r)[:100])
+
+# === 18. 정리 ===
 print("\n" + "=" * 60)
 print(f"결과: ✅ {passed}개 통과 / ❌ {failed}개 실패")
 print("=" * 60)

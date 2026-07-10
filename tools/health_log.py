@@ -17,6 +17,7 @@ Python 3.10+ 호환.
 """
 
 import json
+import math
 import sqlite3
 import re
 import os
@@ -85,6 +86,16 @@ NORMAL_RANGES: Dict[str, Dict[str, Any]] = {
     },
 }
 
+# 저장 전 명백한 오입력만 거르는 물리적 범위입니다. 진단 기준이 아닙니다.
+PLAUSIBLE_RANGES: Dict[str, tuple[float, float]] = {
+    "systolic": (40, 300),
+    "diastolic": (20, 200),
+    "blood_sugar": (20, 1000),
+    "weight": (10, 400),
+    "temperature": (25, 45),
+    "heart_rate": (20, 300),
+}
+
 # data_type 한국어 별칭 → 표준 키 매핑
 DATA_TYPE_ALIASES: Dict[str, str] = {
     "혈압": "blood_pressure",
@@ -100,9 +111,12 @@ DATA_TYPE_ALIASES: Dict[str, str] = {
 
 # 위험 레벨별 메시지
 RISK_MESSAGES = {
-    "normal": "정상 범위입니다. 꾸준히 기록해 주세요!",
-    "warning": "주의 범위입니다. 가족이나 복지사에게 알리는 것을 권장해요.",
-    "danger": "위험 수치입니다! 즉시 병원 방문이나 119 신고를 고려해 주세요.",
+    "normal": "참고 범위 안입니다. 같은 조건에서 꾸준히 기록해 주세요.",
+    "warning": "참고 범위를 벗어났습니다. 잠시 안정한 뒤 다시 측정하고 의료진과 상담해 주세요.",
+    "danger": (
+        "크게 벗어난 수치입니다. 즉시 다시 측정하고 의료기관에 문의해 주세요. "
+        "의식 저하, 호흡 곤란, 흉통 등 위급 증상이 함께 있으면 119에 연락하세요."
+    ),
 }
 
 # ============================================================
@@ -247,6 +261,23 @@ def log_health_data(
                      f"지원: {', '.join(NORMAL_RANGES.keys())}"
         }
 
+    if isinstance(value, bool):
+        return {"error": "value는 숫자여야 합니다."}
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        return {"error": "value는 숫자여야 합니다."}
+    if not math.isfinite(value):
+        return {"error": "value는 유한한 숫자여야 합니다."}
+    plausible_min, plausible_max = PLAUSIBLE_RANGES[data_type]
+    if not plausible_min <= value <= plausible_max:
+        return {
+            "error": (
+                f"{NORMAL_RANGES[data_type]['label']} 값이 입력 가능 범위"
+                f"({plausible_min:g}~{plausible_max:g})를 벗어났습니다. 단위와 숫자를 확인해 주세요."
+            )
+        }
+
     range_info = NORMAL_RANGES[data_type]
     label = range_info["label"]
     unit = range_info["unit"]
@@ -347,7 +378,8 @@ def log_health_data(
         "trend_alert": trend_alert,
         "log_id": log_id,
         "source": source,
-        "recorded_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        "recorded_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "medical_notice": "이 결과는 진단이 아닌 참고용 자동 분류입니다. 증상이나 개인별 목표치는 의료진 판단을 우선하세요.",
     }
 
     # 이상 수치면 보건소 무료 서비스 안내를 함께 제공
@@ -388,6 +420,10 @@ def query_health_data(
             "days_queried": int
         }
     """
+    try:
+        days = max(1, min(int(days), 365))
+    except (TypeError, ValueError):
+        days = 7
     db_path = _get_db_path(db_path)
     _ensure_tables(db_path)
 
@@ -474,6 +510,10 @@ def analyze_health_trend(
             "recommendation": str
         }
     """
+    try:
+        days = max(1, min(int(days), 365))
+    except (TypeError, ValueError):
+        days = 14
     db_path = _get_db_path(db_path)
     _ensure_tables(db_path)
 
