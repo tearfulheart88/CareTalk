@@ -52,15 +52,15 @@ print("=" * 60)
 # === 1. initialize / tools/list ===
 print("\n[1] 서버 정보")
 from server import TOOL_DEFINITIONS
-test("Tool 개수 8개", len(TOOL_DEFINITIONS) == 8, f"got {len(TOOL_DEFINITIONS)}")
+test("Tool 개수 9개", len(TOOL_DEFINITIONS) == 9, f"got {len(TOOL_DEFINITIONS)}")
 tool_names = [t["name"] for t in TOOL_DEFINITIONS]
 test("필수 Tool 포함", all(n in tool_names for n in [
     "daily_checkin", "emergency_detect", "family_report",
     "daily_care_widget", "health_log", "reminiscence_chat", "family_report_widget",
-    "health_facility"
+    "health_facility", "build_care_safety_plan"
 ]), f"got {tool_names}")
 registered_tools = asyncio.run(server.mcp.list_tools())
-test("공식 FastMCP Tool 8개 등록", len(registered_tools) == 8, str([t.name for t in registered_tools]))
+test("공식 FastMCP Tool 9개 등록", len(registered_tools) == 9, str([t.name for t in registered_tools]))
 for registered in registered_tools:
     annotations = registered.annotations
     test(f"{registered.name} annotations 있음", annotations is not None)
@@ -164,7 +164,20 @@ test("parse(135 85) systolic=135", r.get("parsed",{}).get("systolic") == 135.0, 
 test("parse(135 85) diastolic=85", r.get("parsed",{}).get("diastolic") == 85.0, str(r)[:100])
 
 r = execute_tool("health_log", {"user_id":"senior_001","action":"log","data_type":"systolic","value":140,"nickname":"순자"})
-test("log(140) status=danger", r.get("status") == "danger", str(r)[:100])
+test("log(140) 단일 측정은 warning", r.get("status") == "warning", str(r)[:100])
+test("혈압 재측정 맥락 안내", "두 번" in r.get("measurement_context", ""), str(r)[:160])
+
+r = execute_tool("health_log", {"user_id":"senior_001","action":"log","data_type":"weight","value":160,"nickname":"순자"})
+test(
+    "체중 절대값은 위험 판정하지 않음",
+    r.get("status") == "recorded" and "변화 추세" in r.get("normal_range", "") and not r.get("reference_basis"),
+    str(r)[:160],
+)
+
+execute_tool("health_log", {"user_id":"senior_001","action":"log","data_type":"weight","value":140,"nickname":"순자"})
+r = execute_tool("health_log", {"user_id":"senior_001","action":"analyze","data_type":"weight","days":14})
+weight_pattern = next((item for item in r.get("patterns", []) if item.get("data_type") == "weight"), {})
+test("체중은 절대값 대신 변화 추세 분석", weight_pattern.get("pattern") == "meaningful_change", str(r)[:160])
 
 r = execute_tool("health_log", {"user_id":"senior_001","action":"parse","message":"혈당 180이에요","nickname":"순자"})
 results = r.get("results",[])
@@ -204,6 +217,43 @@ test("Widget B version=2.0", r.get("version") == "2.0", str(r)[:100])
 test("Widget B outputs 2개 (BasicCard+ListCard)", len(outputs) == 2, str(r)[:100])
 test("Widget B basicCard 있음", len(outputs) > 0 and "basicCard" in outputs[0], str(r)[:100])
 test("Widget B listCard 있음", len(outputs) > 1 and "listCard" in outputs[1], str(r)[:100])
+
+# === 8-1. build_care_safety_plan ===
+print("\n[8-1] build_care_safety_plan")
+r = execute_tool("build_care_safety_plan", {
+    "user_id": "senior_001",
+    "nickname": "순자",
+    "checkin_time": "09:00",
+    "response_window_hours": 2,
+    "contact_roles": "딸, 복지사",
+    "accessibility_needs": "글씨가 작으면 읽기 어려움",
+    "senior_consented": False,
+})
+test("동의 전 안전계획은 draft", r.get("status") == "draft_requires_senior_consent", str(r)[:120])
+test("단계적 사람 확인 4단계", len(r.get("escalation_steps", [])) == 4, str(r)[:120])
+test("큰 글씨 접근성 반영", any("큰 글씨" in item for item in r.get("accessibility_design", [])), str(r)[:160])
+test("119 자동신고 없음 명시", "119 신고를 수행하지 않습니다" in r.get("limitations", ""), str(r)[:160])
+test("안전계획 카드 2개", len(r.get("kakao_cards", [])) == 2, str(r)[:120])
+
+phone_result = execute_tool("build_care_safety_plan", {
+    "user_id": "senior_001",
+    "contact_roles": "딸 010-1234-5678",
+})
+address_result = execute_tool("build_care_safety_plan", {
+    "user_id": "senior_001",
+    "contact_roles": "딸 서울시 행복로 12",
+})
+test(
+    "연락처·주소 입력 차단",
+    "전화번호" in phone_result.get("error", "") and "개인정보" in address_result.get("error", ""),
+    f"phone={phone_result}, address={address_result}"[:180],
+)
+
+r = execute_tool("build_care_safety_plan", {
+    "user_id": "senior_001",
+    "senior_consented": True,
+})
+test("동의 표시 후에도 사람 검토 상태", r.get("status") == "ready_for_human_review", str(r)[:120])
 
 # === 9. 에러 처리 ===
 print("\n[9] 에러 처리")

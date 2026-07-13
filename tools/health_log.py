@@ -5,7 +5,7 @@
 ==========================================
 건강 데이터(혈압·혈당·체중) 기록 및 추세 분석 도구.
 독거노인이 카카오톡 대화로 건강 수치를 입력하면 자동으로 기록하고,
-정상 범위를 판정하여 이상 시 가족·복지사에게 알린다.
+이상 가능성에는 재측정·상담 및 사람이 공유할 수 있는 참고 결과를 제공한다.
 
 Actions:
   - log: 건강 데이터 기록 (user_id, data_type, value)
@@ -42,7 +42,9 @@ NORMAL_RANGES: Dict[str, Dict[str, Any]] = {
         "normal_min": 90,
         "normal_max": 119,
         "warning_min": 80,
-        "warning_max": 139,
+        # 140 이상은 고혈압 범주이지만 한 번의 측정만으로 RED 응급경보를 만들지 않는다.
+        # 180까지는 재측정·의료진 상담 안내, 180 초과부터 위급 증상 확인을 강화한다.
+        "warning_max": 180,
     },
     "diastolic": {         # 이완기 혈압
         "label": "이완기 혈압",
@@ -50,15 +52,17 @@ NORMAL_RANGES: Dict[str, Dict[str, Any]] = {
         "normal_min": 60,
         "normal_max": 79,
         "warning_min": 50,
-        "warning_max": 89,
+        "warning_max": 120,
     },
     "blood_sugar": {       # 혈당 (공복)
         "label": "혈당",
         "unit": "mg/dL",
         "normal_min": 70,
         "normal_max": 140,
-        "warning_min": 60,
-        "warning_max": 180,
+        # 공복/식후/개인 치료목표가 없으므로 넓은 참고구간만 사용한다.
+        # <54는 즉시 조치가 필요한 저혈당, 300 이상 지속은 응급평가가 필요할 수 있다.
+        "warning_min": 54,
+        "warning_max": 299,
     },
     "weight": {            # 체중 (kg) — 범위 판정은 개인 기준치 필요
         "label": "체중",
@@ -111,12 +115,34 @@ DATA_TYPE_ALIASES: Dict[str, str] = {
 
 # 위험 레벨별 메시지
 RISK_MESSAGES = {
+    "recorded": "수치를 기록했습니다. 개인 기준과 이전 기록의 변화 추세를 함께 확인해 주세요.",
     "normal": "참고 범위 안입니다. 같은 조건에서 꾸준히 기록해 주세요.",
     "warning": "참고 범위를 벗어났습니다. 잠시 안정한 뒤 다시 측정하고 의료진과 상담해 주세요.",
     "danger": (
         "크게 벗어난 수치입니다. 즉시 다시 측정하고 의료기관에 문의해 주세요. "
         "의식 저하, 호흡 곤란, 흉통 등 위급 증상이 함께 있으면 119에 연락하세요."
     ),
+}
+
+MEASUREMENT_CONTEXT = {
+    "systolic": "혈압은 5분 안정 후 1분 간격으로 두 번 재고, 한 번의 높은 수치만으로 응급상황을 단정하지 않습니다.",
+    "diastolic": "혈압은 5분 안정 후 1분 간격으로 두 번 재고, 한 번의 높은 수치만으로 응급상황을 단정하지 않습니다.",
+    "blood_sugar": "혈당 목표는 공복·식후·당뇨 치료 여부에 따라 달라집니다. 측정 상황과 개인 목표를 의료진에게 확인하세요.",
+    "weight": "체중은 개인의 키·질환·평소 기준과 변화 추세 없이 정상 여부를 판정할 수 없습니다.",
+    "temperature": "체온은 측정 부위와 기기에 따라 차이가 날 수 있습니다.",
+    "heart_rate": "맥박은 휴식 여부·운동·복용약에 따라 달라질 수 있습니다.",
+}
+
+REFERENCE_BASIS = {
+    "systolic": {
+        "blood_pressure": "https://professional.heart.org/en/science-news/2025-high-blood-pressure-guideline/top-things-to-know",
+    },
+    "diastolic": {
+        "blood_pressure": "https://professional.heart.org/en/science-news/2025-high-blood-pressure-guideline/top-things-to-know",
+    },
+    "blood_sugar": {
+        "blood_glucose": "https://diabetesjournals.org/care/article/49/Supplement_1/S132/163927/6-Glycemic-Goals-Hypoglycemia-and-Hyperglycemic",
+    },
 }
 
 # ============================================================
@@ -240,7 +266,7 @@ def log_health_data(
 
     Returns:
         {
-            "status": "normal" | "warning" | "danger",
+            "status": "recorded" | "normal" | "warning" | "danger",
             "data_type": str,
             "label": str,
             "value": float,
@@ -286,15 +312,21 @@ def log_health_data(
     warning_min = range_info["warning_min"]
     warning_max = range_info["warning_max"]
 
-    # 정상 범위 판정
-    if value < warning_min or value > warning_max:
+    # 체중은 키·평소 기준·질환 정보 없이 절대값만으로 정상/위험을 판정하지 않는다.
+    if data_type == "weight":
+        status = "recorded"
+    elif value < warning_min or value > warning_max:
         status = "danger"
     elif value < normal_min or value > normal_max:
         status = "warning"
     else:
         status = "normal"
 
-    normal_range_str = f"{normal_min}~{normal_max} {unit}"
+    normal_range_str = (
+        "개인 기준 및 변화 추세 필요"
+        if data_type == "weight"
+        else f"{normal_min}~{normal_max} {unit}"
+    )
     advice = RISK_MESSAGES.get(status, "")
 
     # DB에 기록
@@ -308,8 +340,8 @@ def log_health_data(
             (user_id, nickname)
         )
 
-    # normal_range: 정상 범위 내이면 1, 아니면 0
-    is_normal = 1 if status == "normal" else 0
+    # normal_range: 정상 범위 내이면 1, 아니면 0. 체중은 절대값 경보에서 제외한다.
+    is_normal = 1 if status in ("normal", "recorded") else 0
     if source not in ("manual", "device", "ocr"):
         source = "manual"
     cursor.execute(
@@ -319,8 +351,8 @@ def log_health_data(
     )
     log_id = cursor.lastrowid
 
-    # danger 수치는 alerts에도 기록해 가족 리포트/Widget B에 노출되게 한다.
-    # (기록만 하고 끝나면 위험 혈압을 재도 가족이 알 수 없다)
+    # danger 수치는 가족 리포트/Widget B용 로컬 플래그로 남긴다.
+    # 외부 메시지 발송이나 보호자 자동 통보는 수행하지 않는다.
     if status == "danger":
         cursor.execute(
             """INSERT INTO alerts (user_id, risk_level, keywords, action_taken)
@@ -379,7 +411,9 @@ def log_health_data(
         "log_id": log_id,
         "source": source,
         "recorded_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "medical_notice": "이 결과는 진단이 아닌 참고용 자동 분류입니다. 증상이나 개인별 목표치는 의료진 판단을 우선하세요.",
+        "medical_notice": "이 기록과 자동 분류는 진단이 아닙니다. 증상이나 개인별 목표치는 의료진 판단을 우선하세요.",
+        "measurement_context": MEASUREMENT_CONTEXT.get(data_type, "개인별 기준과 측정 상황을 함께 확인하세요."),
+        "reference_basis": REFERENCE_BASIS.get(data_type, {}),
     }
 
     # 이상 수치면 보건소 무료 서비스 안내를 함께 제공
@@ -575,6 +609,34 @@ def analyze_health_trend(
         severity = "normal"
         description = ""
 
+        if dt == "weight":
+            if abs(change_pct) > 5:
+                pattern_type = "meaningful_change"
+                severity = "attention"
+                direction = "증가" if change > 0 else "감소"
+                description = (
+                    f"{label}: 기록 기간 중 {abs(change_pct):.1f}% {direction} "
+                    f"({earliest:.1f}→{latest:.1f}{unit}) — 개인 기준과 측정 조건 확인 필요"
+                )
+            else:
+                description = f"{label}: 절대값 판정 없이 변화 추세만 기록 중 (평균 {avg:.1f}{unit})"
+
+            patterns.append({
+                "data_type": dt,
+                "label": label,
+                "pattern": pattern_type,
+                "severity": severity,
+                "description": description,
+                "latest_value": latest,
+                "average": round(avg, 1),
+                "change": round(change, 1),
+                "change_pct": round(change_pct, 1),
+                "record_count": len(values),
+            })
+            if severity == "attention" and overall_severity != "concerning":
+                overall_severity = "attention_needed"
+            continue
+
         # 지속적 이상
         abnormal_count = 0
         if n_min is not None and n_max is not None:
@@ -625,12 +687,12 @@ def analyze_health_trend(
     if overall_severity == "concerning":
         recommendation = (
             "🚨 지속적인 건강 수치 이상이 감지되었습니다. "
-            "가족 및 복지사에게 즉시 알리고, 병원 방문을 권장합니다."
+            "기록을 가족·돌봄 담당자와 즉시 공유하고, 의료기관에 문의하세요."
         )
     elif overall_severity == "attention_needed":
         recommendation = (
             "⚠️ 일부 건강 수치에 주의가 필요합니다. "
-            "가족에게 알림을 보내고, 정기 검진을 권장합니다."
+            "기록을 가족·돌봄 담당자와 공유하고, 정기 검진을 권장합니다."
         )
     else:
         recommendation = "✅ 전반적으로 안정적인 건강 상태입니다. 꾸준한 기록 부탁드려요!"

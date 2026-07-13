@@ -152,7 +152,8 @@ TOOL_DEFINITIONS = [
     {"name": "health_log", "description": "건강 데이터(혈압·혈당·체중·체온·맥박) 기록 및 추세 분석. action: log(기록), query(조회), analyze(추세 분석), parse(자연어 파싱 기록). source로 입력 경로(직접/기기/사진) 구분", "inputSchema": {"type": "object", "properties": {"user_id": {"type": "string"}, "action": {"type": "string", "enum": ["log", "query", "analyze", "parse"]}, "data_type": {"type": "string", "enum": ["systolic", "diastolic", "blood_sugar", "weight", "temperature", "heart_rate"]}, "value": {"type": "number"}, "message": {"type": "string"}, "nickname": {"type": "string"}, "days": {"type": "integer"}, "source": {"type": "string", "enum": ["manual", "device", "ocr"], "description": "입력 경로: manual=직접 입력, device=혈압계 등 기기 연동, ocr=측정기 사진 판독"}}, "required": ["user_id"]}},
     {"name": "reminiscence_chat", "description": "추억 회상 기반 정서 지원 대화. action: chat(대화 응답), suggest_topic(주제 추천)", "inputSchema": {"type": "object", "properties": {"user_id": {"type": "string"}, "action": {"type": "string", "enum": ["chat", "suggest_topic"]}, "message": {"type": "string"}, "sentiment": {"type": "string", "enum": ["positive", "neutral", "negative"]}, "nickname": {"type": "string"}}, "required": ["user_id"]}},
     {"name": "family_report_widget", "description": "가족용 '주간 돌봄 리포트' Widget B 렌더 (BasicCard + ListCard)", "inputSchema": {"type": "object", "properties": {"user_id": {"type": "string"}, "nickname": {"type": "string"}, "days": {"type": "integer"}}, "required": ["user_id"]}},
-    {"name": "health_facility", "description": "어르신 무료 건강 서비스(보건소·치매안심센터) 안내. action: search(지역 검색), programs(무료 프로그램 목록), recommend(건강 기록 기반 맞춤 추천), notify(알림 메시지 생성)", "inputSchema": {"type": "object", "properties": {"user_id": {"type": "string"}, "action": {"type": "string", "enum": ["search", "programs", "recommend", "notify"]}, "region": {"type": "string", "description": "지역명 일부 (예: 마포, 수원)"}, "facility_type": {"type": "string", "enum": ["보건소", "치매안심센터"]}, "nickname": {"type": "string"}, "days": {"type": "integer"}}, "required": ["user_id"]}}
+    {"name": "health_facility", "description": "어르신 무료 건강 서비스(보건소·치매안심센터) 안내. action: search(지역 검색), programs(무료 프로그램 목록), recommend(건강 기록 기반 맞춤 추천), notify(알림 메시지 생성)", "inputSchema": {"type": "object", "properties": {"user_id": {"type": "string"}, "action": {"type": "string", "enum": ["search", "programs", "recommend", "notify"]}, "region": {"type": "string", "description": "지역명 일부 (예: 마포, 수원)"}, "facility_type": {"type": "string", "enum": ["보건소", "치매안심센터"]}, "nickname": {"type": "string"}, "days": {"type": "integer"}}, "required": ["user_id"]}},
+    {"name": "build_care_safety_plan", "description": "당사자 동의와 접근성, 단계적 사람 확인을 반영한 돌봄 안전계획 초안 생성. 실제 메시지·전화·119 신고는 수행하지 않음", "inputSchema": {"type": "object", "properties": {"user_id": {"type": "string"}, "nickname": {"type": "string"}, "checkin_time": {"type": "string", "description": "24시간제 HH:MM"}, "response_window_hours": {"type": "integer", "minimum": 1, "maximum": 24}, "contact_roles": {"type": "string", "description": "전화번호가 아닌 관계 역할 (예: 딸, 복지사)"}, "accessibility_needs": {"type": "string"}, "senior_consented": {"type": "boolean"}}, "required": ["user_id"]}}
 ]
 
 _TEXT_LIMITS = {
@@ -161,6 +162,9 @@ _TEXT_LIMITS = {
     "nickname": 40,
     "message": 4000,
     "region": 80,
+    "contact_roles": 120,
+    "checkin_time": 5,
+    "accessibility_needs": 300,
 }
 
 
@@ -325,6 +329,20 @@ def execute_tool(name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
             return build_notify_message(user_id, nickname, region, db_path=DB_PATH)
         else:
             return {"error": "알 수 없는 action: " + action}
+    elif name == "build_care_safety_plan":
+        from tools.care_safety_plan import build_care_safety_plan
+        user_id, error = _require_arg(arguments, "user_id")
+        if error:
+            return error
+        return build_care_safety_plan(
+            user_id=user_id,
+            nickname=arguments.get("nickname", "어르신"),
+            checkin_time=arguments.get("checkin_time", "09:00"),
+            response_window_hours=arguments.get("response_window_hours", 2),
+            contact_roles=arguments.get("contact_roles", "가족, 복지사"),
+            accessibility_needs=arguments.get("accessibility_needs", ""),
+            senior_consented=arguments.get("senior_consented", False),
+        )
     else:
         return {"error": "알 수 없는 Tool: " + name}
 
@@ -341,6 +359,7 @@ mcp = FastMCP(
     instructions=(
         "돌봄톡은 독거 어르신의 안부 확인, 건강 기록, 응급 신호 감지, "
         "추억 회상 대화와 가족 리포트를 제공하는 한국어 돌봄 MCP 서버입니다. "
+        "안부 계획을 요청하면 build_care_safety_plan으로 당사자 동의와 사람 확인 단계를 먼저 설계하세요. "
         "응급 판정은 보조 신호이며 실제 위급 상황에서는 즉시 119에 연락해야 합니다."
     ),
     stateless_http=True,
@@ -368,8 +387,8 @@ def _annotations(
 @mcp.tool(
     title="Daily Check-in | 매일 안부 확인",
     description=(
-        "Starts a daily check-in, analyzes a reply, or checks non-response for "
-        "CareTalk(돌봄톡), with protected AI analysis and rules fallback."
+        "안부를 시작하거나 답변·무응답을 확인할 때 호출합니다. Starts a daily check-in, analyzes a reply, "
+        "or checks non-response for CareTalk(돌봄톡), with protected AI and rules fallback."
     ),
     annotations=_annotations(
         "Daily Check-in | 매일 안부 확인", read_only=False, idempotent=False, open_world=True
@@ -388,8 +407,8 @@ def daily_checkin(
 @mcp.tool(
     title="Detect Emergency Signals | 응급 신호 감지",
     description=(
-        "Conservatively evaluates current emergency language or prolonged silence for "
-        "CareTalk(돌봄톡); it does not contact emergency services."
+        "현재 위급 증상이나 장기 무응답을 보수적으로 판정할 때 호출합니다. Conservatively evaluates current "
+        "emergency language or silence for CareTalk(돌봄톡); it never contacts emergency services."
     ),
     annotations=_annotations(
         "Detect Emergency Signals | 응급 신호 감지", read_only=False, idempotent=False, open_world=True
@@ -407,8 +426,8 @@ def emergency_detect(
 @mcp.tool(
     title="Create Family Care Report | 가족 돌봄 리포트",
     description=(
-        "Creates and stores a daily or weekly family care report for CareTalk(돌봄톡), "
-        "using protected AI summarization or a deterministic fallback."
+        "가족이 오늘 또는 일주일 상태를 요약해 달라고 할 때 호출합니다. Creates and stores a daily or weekly "
+        "family care report for CareTalk(돌봄톡) using protected AI or a deterministic fallback."
     ),
     annotations=_annotations(
         "Create Family Care Report | 가족 돌봄 리포트", read_only=False, idempotent=False, open_world=True
@@ -424,7 +443,7 @@ def family_report(
 
 @mcp.tool(
     title="Render Daily Care Widget | 오늘의 돌봄 위젯",
-    description="Renders the senior-facing daily care response widget for CareTalk(돌봄톡).",
+    description="카카오 응답 화면이 명시적으로 필요할 때만 호출합니다. Renders the senior-facing daily response widget for CareTalk(돌봄톡).",
     annotations=_annotations(
         "Render Daily Care Widget | 오늘의 돌봄 위젯", read_only=True, idempotent=True, open_world=False
     ),
@@ -441,8 +460,8 @@ def daily_care_widget(
 @mcp.tool(
     title="Manage Health Log | 건강 기록 관리",
     description=(
-        "Records, queries, parses, or analyzes user-provided wellness measurements for "
-        "CareTalk(돌봄톡); results are informational and not medical diagnoses."
+        "사용자가 혈압·혈당 등 건강 수치를 말하거나 추세를 물을 때 호출합니다. Records, queries, parses, or "
+        "analyzes wellness measurements for CareTalk(돌봄톡); results are not medical diagnoses."
     ),
     annotations=_annotations(
         "Manage Health Log | 건강 기록 관리", read_only=False, idempotent=False, open_world=False
@@ -465,8 +484,8 @@ def health_log(
 @mcp.tool(
     title="Reminiscence Chat | 추억 회상 대화",
     description=(
-        "Continues a supportive reminiscence conversation or suggests a topic for "
-        "CareTalk(돌봄톡), then stores the conversation record."
+        "사용자가 외로움이나 옛 추억을 이야기하며 대화를 원할 때 호출합니다. Continues a supportive "
+        "reminiscence conversation for CareTalk(돌봄톡), then stores the conversation record."
     ),
     annotations=_annotations(
         "Reminiscence Chat | 추억 회상 대화", read_only=False, idempotent=False, open_world=True
@@ -485,7 +504,7 @@ def reminiscence_chat(
 
 @mcp.tool(
     title="Render Family Report Widget | 가족 리포트 위젯",
-    description="Renders the family-facing weekly care report widget for CareTalk(돌봄톡).",
+    description="가족용 카카오 카드 화면이 명시적으로 필요할 때만 호출합니다. Renders the family-facing report widget for CareTalk(돌봄톡).",
     annotations=_annotations(
         "Render Family Report Widget | 가족 리포트 위젯", read_only=True, idempotent=True, open_world=False
     ),
@@ -502,8 +521,8 @@ def family_report_widget(
 @mcp.tool(
     title="Find Health Facilities | 건강시설 안내",
     description=(
-        "Finds demo public health facilities and free programs by region for CareTalk(돌봄톡); "
-        "the current dataset is bundled and does not make a live reservation."
+        "사용자가 가까운 무료 보건 서비스를 물을 때 호출합니다. Finds clearly labeled demo public-health "
+        "facilities for CareTalk(돌봄톡); the bundled dataset does not make a live reservation."
     ),
     annotations=_annotations(
         "Find Health Facilities | 건강시설 안내", read_only=True, idempotent=True, open_world=False
@@ -521,6 +540,29 @@ def health_facility(
     return _tool_result("health_facility", locals())
 
 
+@mcp.tool(
+    title="Build a Consent-First Safety Plan | 돌봄 안전계획",
+    description=(
+        "안부 확인을 시작하기 전 또는 가족이 돌봄 방식을 정하고 싶을 때 우선 호출합니다. Builds a consent-first, "
+        "accessible, human-in-the-loop safety-plan draft for CareTalk(돌봄톡) without storing contacts or sending alerts."
+    ),
+    annotations=_annotations(
+        "Build a Consent-First Safety Plan | 돌봄 안전계획", read_only=True, idempotent=True, open_world=False
+    ),
+)
+def build_care_safety_plan(
+    user_id: str,
+    nickname: str = "어르신",
+    checkin_time: str = "09:00",
+    response_window_hours: int = 2,
+    contact_roles: str = "가족, 복지사",
+    accessibility_needs: str = "",
+    senior_consented: bool = False,
+) -> Dict[str, Any]:
+    """당사자 동의와 단계적 사람 확인을 반영한 비실행형 안전계획 초안을 만듭니다."""
+    return _tool_result("build_care_safety_plan", locals())
+
+
 def _server_info() -> Dict[str, Any]:
     openai_ready = _env_configured("OPENAI_API_KEY")
     if MOCK_MODE:
@@ -533,7 +575,7 @@ def _server_info() -> Dict[str, Any]:
         mode = "rules_fallback"
     return {
         "server": "caretalk",
-        "version": "2.3.0",
+        "version": "3.0.0",
         "status": "ok",
         "mode": mode,
         "mock_mode": MOCK_MODE,

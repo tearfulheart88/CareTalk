@@ -3,6 +3,16 @@
 독거 어르신의 안부 확인, 건강 기록, 응급 신호 감지, 정서 지원과 가족 리포트를 제공하는
 한국어 MCP 서버입니다. AGENTIC PLAYER 10 출품을 위한 검증 가능한 프로토타입입니다.
 
+> **AI가 사람을 대신하는 돌봄이 아니라, 당사자의 선택을 사람의 돌봄으로 연결합니다.**
+
+심사위원용 대표 질문과 구현 경계는 [SUBMISSION.md](SUBMISSION.md)에 30초 분량으로 정리했습니다.
+
+## 대표 경험
+
+가족이 안부 시간·응답 여유·확인 역할·접근성 요구를 말하면 돌봄톡은 먼저 동의가 필요한
+안전계획 초안을 만듭니다. 안부 확인, 자연어 건강 기록, 위급 신호, 가족 요약을 함께 검토할 수
+있으며 실제 신고나 발송을 했다고 오인시키지 않습니다.
+
 ## 구현 상태
 
 - 공식 MCP Python SDK의 `FastMCP` 사용
@@ -13,7 +23,7 @@
 - OpenAI 키 설정 시 감정 분석, 응급 맥락 확인, 회상 대화, 리포트 요약에 LLM 사용
 - 키가 있어도 명시적 live opt-in 없이는 OpenAI 네트워크 호출 차단
 - SQLite 일일 한도, 분당·동시 호출 제한, 2.5초 타임아웃 상한 적용
-- PlayMCP 필수 Tool annotations 5개를 8개 Tool에 모두 명시
+- PlayMCP 필수 Tool annotations 5개를 9개 Tool에 모두 명시
 - SQLite 기반 체크인·건강 기록·리포트 연결
 - 카카오 응답 포맷용 Widget A/B JSON 생성
 - 직접 함수 E2E와 실제 MCP 클라이언트 핸드셰이크 검증
@@ -30,6 +40,7 @@
 | `reminiscence_chat` | 감정별 회상 대화와 주제 추천 | `chat`, `suggest_topic` |
 | `family_report_widget` | 가족용 카카오 리포트 JSON 생성 | - |
 | `health_facility` | 내장 데모 데이터 기반 보건소·무료 프로그램 안내 | `search`, `programs`, `recommend`, `notify` |
+| `build_care_safety_plan` | 동의·접근성·사람 확인 중심 돌봄 안전계획 | - |
 
 ## 안전 원칙
 
@@ -41,6 +52,9 @@
 - `notify_targets`와 카카오 JSON은 발송 요청 데이터입니다. MCP Tool 자체가 알림톡을 보내지는 않습니다.
 - 건강 수치는 명백한 오입력과 비유한수 값을 저장 전에 차단합니다.
 - 건강 범위는 참고용 자동 분류이며 증상과 개인별 목표치는 의료진 판단을 우선합니다.
+- 혈압 140/90 수준의 단일 측정은 RED로 과장하지 않고 재측정을 안내하며, 180/120을 넘는 값과 위급 증상을 강하게 확인합니다.
+- 체중은 키·평소 기준·질환 정보 없이 절대값으로 위험 판정하지 않고 변화 추세만 확인합니다.
+- 안전계획은 전화번호·주소·이메일을 받지 않고 관계 역할만 사용하며, 동의 전에는 초안 상태로 유지합니다.
 
 ## 빠른 시작
 
@@ -90,13 +104,13 @@ python _e2e_test.py
 python -m compileall -q .
 ```
 
-현재 E2E 검증은 139개이며, 실제 Streamable HTTP 클라이언트로 8개 Tool metadata,
+현재 E2E 검증은 153개이며, 실제 Streamable HTTP 클라이언트로 9개 Tool metadata,
 대표 호출, 오류 응답의 MCP `isError`도 확인합니다.
 
 실제 MCP 연결은 공식 Python SDK의 `streamable_http_client`로 다음 순서를 검증합니다.
 
 1. `initialize`
-2. `tools/list`에서 8개 Tool 확인
+2. `tools/list`에서 9개 Tool 확인
 3. `tools/call` 대표 시나리오 호출
 4. 오류 Tool의 MCP `isError` 확인
 
