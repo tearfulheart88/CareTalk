@@ -11,8 +11,11 @@ from typing import Any, Dict, Literal, Optional
 
 from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp.exceptions import ToolError
+from mcp.types import ToolAnnotations
 from starlette.requests import Request
 from starlette.responses import JSONResponse
+
+from services.usage_guard import live_api_enabled
 
 PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, PROJECT_ROOT)
@@ -118,11 +121,14 @@ DB_PATH = _resolve_db_path()
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
 logger = logging.getLogger("caretalk-server")
 
-MOCK_MODE = _env_bool("MOCK_MODE")
+MOCK_MODE = _env_bool("MOCK_MODE", True)
 
 def set_mock_mode(enabled: bool):
     global MOCK_MODE
     MOCK_MODE = bool(enabled)
+    os.environ["MOCK_MODE"] = "true" if MOCK_MODE else "false"
+    if MOCK_MODE:
+        os.environ["LIVE_API_ENABLED"] = "false"
 
 # Utility
 NL = chr(10)
@@ -343,7 +349,32 @@ mcp = FastMCP(
 )
 
 
-@mcp.tool()
+def _annotations(
+    title: str,
+    *,
+    read_only: bool,
+    idempotent: bool,
+    open_world: bool,
+) -> ToolAnnotations:
+    return ToolAnnotations(
+        title=title,
+        readOnlyHint=read_only,
+        destructiveHint=False,
+        idempotentHint=idempotent,
+        openWorldHint=open_world,
+    )
+
+
+@mcp.tool(
+    title="Daily Check-in | 매일 안부 확인",
+    description=(
+        "Starts a daily check-in, analyzes a reply, or checks non-response for "
+        "CareTalk(돌봄톡), with protected AI analysis and rules fallback."
+    ),
+    annotations=_annotations(
+        "Daily Check-in | 매일 안부 확인", read_only=False, idempotent=False, open_world=True
+    ),
+)
 def daily_checkin(
     user_id: str,
     action: Literal["initiate", "analyze", "no_response"] = "initiate",
@@ -354,7 +385,16 @@ def daily_checkin(
     return _tool_result("daily_checkin", locals())
 
 
-@mcp.tool()
+@mcp.tool(
+    title="Detect Emergency Signals | 응급 신호 감지",
+    description=(
+        "Conservatively evaluates current emergency language or prolonged silence for "
+        "CareTalk(돌봄톡); it does not contact emergency services."
+    ),
+    annotations=_annotations(
+        "Detect Emergency Signals | 응급 신호 감지", read_only=False, idempotent=False, open_world=True
+    ),
+)
 def emergency_detect(
     user_id: str,
     action: Literal["detect", "silence"] = "detect",
@@ -364,7 +404,16 @@ def emergency_detect(
     return _tool_result("emergency_detect", locals())
 
 
-@mcp.tool()
+@mcp.tool(
+    title="Create Family Care Report | 가족 돌봄 리포트",
+    description=(
+        "Creates and stores a daily or weekly family care report for CareTalk(돌봄톡), "
+        "using protected AI summarization or a deterministic fallback."
+    ),
+    annotations=_annotations(
+        "Create Family Care Report | 가족 돌봄 리포트", read_only=False, idempotent=False, open_world=True
+    ),
+)
 def family_report(
     senior_user_id: str,
     report_type: Literal["weekly", "daily"] = "weekly",
@@ -373,7 +422,13 @@ def family_report(
     return _tool_result("family_report", locals())
 
 
-@mcp.tool()
+@mcp.tool(
+    title="Render Daily Care Widget | 오늘의 돌봄 위젯",
+    description="Renders the senior-facing daily care response widget for CareTalk(돌봄톡).",
+    annotations=_annotations(
+        "Render Daily Care Widget | 오늘의 돌봄 위젯", read_only=True, idempotent=True, open_world=False
+    ),
+)
 def daily_care_widget(
     user_id: str,
     nickname: str = "어르신",
@@ -383,7 +438,16 @@ def daily_care_widget(
     return _tool_result("daily_care_widget", locals())
 
 
-@mcp.tool()
+@mcp.tool(
+    title="Manage Health Log | 건강 기록 관리",
+    description=(
+        "Records, queries, parses, or analyzes user-provided wellness measurements for "
+        "CareTalk(돌봄톡); results are informational and not medical diagnoses."
+    ),
+    annotations=_annotations(
+        "Manage Health Log | 건강 기록 관리", read_only=False, idempotent=False, open_world=False
+    ),
+)
 def health_log(
     user_id: str,
     action: Literal["log", "query", "analyze", "parse"] = "log",
@@ -398,7 +462,16 @@ def health_log(
     return _tool_result("health_log", locals())
 
 
-@mcp.tool()
+@mcp.tool(
+    title="Reminiscence Chat | 추억 회상 대화",
+    description=(
+        "Continues a supportive reminiscence conversation or suggests a topic for "
+        "CareTalk(돌봄톡), then stores the conversation record."
+    ),
+    annotations=_annotations(
+        "Reminiscence Chat | 추억 회상 대화", read_only=False, idempotent=False, open_world=True
+    ),
+)
 def reminiscence_chat(
     user_id: str,
     action: Literal["chat", "suggest_topic"] = "chat",
@@ -410,7 +483,13 @@ def reminiscence_chat(
     return _tool_result("reminiscence_chat", locals())
 
 
-@mcp.tool()
+@mcp.tool(
+    title="Render Family Report Widget | 가족 리포트 위젯",
+    description="Renders the family-facing weekly care report widget for CareTalk(돌봄톡).",
+    annotations=_annotations(
+        "Render Family Report Widget | 가족 리포트 위젯", read_only=True, idempotent=True, open_world=False
+    ),
+)
 def family_report_widget(
     user_id: str,
     nickname: str = "",
@@ -420,7 +499,16 @@ def family_report_widget(
     return _tool_result("family_report_widget", locals())
 
 
-@mcp.tool()
+@mcp.tool(
+    title="Find Health Facilities | 건강시설 안내",
+    description=(
+        "Finds demo public health facilities and free programs by region for CareTalk(돌봄톡); "
+        "the current dataset is bundled and does not make a live reservation."
+    ),
+    annotations=_annotations(
+        "Find Health Facilities | 건강시설 안내", read_only=True, idempotent=True, open_world=False
+    ),
+)
 def health_facility(
     user_id: str,
     action: Literal["search", "programs", "recommend", "notify"] = "search",
@@ -435,12 +523,21 @@ def health_facility(
 
 def _server_info() -> Dict[str, Any]:
     openai_ready = _env_configured("OPENAI_API_KEY")
+    if MOCK_MODE:
+        mode = "mock"
+    elif not live_api_enabled():
+        mode = "safe_fallback"
+    elif openai_ready:
+        mode = "live"
+    else:
+        mode = "rules_fallback"
     return {
         "server": "caretalk",
-        "version": "2.2.0",
+        "version": "2.3.0",
         "status": "ok",
-        "mode": "mock" if MOCK_MODE else ("live" if openai_ready else "rules_fallback"),
+        "mode": mode,
         "mock_mode": MOCK_MODE,
+        "live_api_enabled": live_api_enabled(),
         "tools": [item["name"] for item in TOOL_DEFINITIONS],
         "endpoint": "/mcp",
         "transport": "streamable-http",
@@ -473,7 +570,13 @@ def main():
     args = parse_args()
     if args.debug:
         logging.getLogger().setLevel(logging.DEBUG)
-    set_mock_mode(_env_bool("MOCK_MODE") if args.mock is None else args.mock)
+    if args.mock is True:
+        set_mock_mode(True)
+    elif args.mock is False:
+        set_mock_mode(False)
+        os.environ["LIVE_API_ENABLED"] = "true"
+    else:
+        set_mock_mode(_env_bool("MOCK_MODE", True))
     # 시작 시 스키마 보장 (테이블 없으면 생성) — 단일 진실원천: db/schema.py
     from db.schema import ensure_schema
     ensure_schema(DB_PATH)

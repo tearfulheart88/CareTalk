@@ -270,7 +270,7 @@ def _get_daily_records(
         start_date = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
         end_date = datetime.now().strftime("%Y-%m-%d")
 
-        conn = sqlite3.connect(db_path, timeout=30)
+        conn = sqlite3.connect(db_path, timeout=1.0)
         cursor = conn.cursor()
         cursor.execute(
             """SELECT checkin_date, sentiment, status, user_message, response_received
@@ -306,7 +306,7 @@ def _count_health_abnormal(
     """
     try:
         start_str = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d 00:00:00")
-        conn = sqlite3.connect(db_path, timeout=30)
+        conn = sqlite3.connect(db_path, timeout=1.0)
         cursor = conn.cursor()
         cursor.execute(
             """SELECT COUNT(*) FROM health_logs
@@ -332,7 +332,7 @@ def _get_emergency_events(
         start_str = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d 00:00:00")
         end_str = datetime.now().strftime("%Y-%m-%d 23:59:59")
 
-        conn = sqlite3.connect(db_path, timeout=30)
+        conn = sqlite3.connect(db_path, timeout=1.0)
         cursor = conn.cursor()
         cursor.execute(
             """SELECT risk_level, detected_keywords, created_at

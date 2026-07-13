@@ -29,6 +29,14 @@ _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
+from services.usage_guard import (  # noqa: E402
+    live_api_enabled,
+    max_output_tokens,
+    openai_timeout,
+    release_openai_call,
+    reserve_openai_call,
+)
+
 
 # ============================================================
 # 회상 주제 카탈로그 (감정별)
@@ -129,7 +137,7 @@ def _ensure_tables(db_path: str) -> None:
 def _get_nickname(user_id: str, db_path: str, fallback: str = "어르신") -> str:
     """DB에서 닉네임을 조회한다."""
     try:
-        conn = sqlite3.connect(db_path, timeout=30)
+        conn = sqlite3.connect(db_path, timeout=1.0)
         cursor = conn.cursor()
         cursor.execute("SELECT nickname FROM users WHERE user_id = ?", (user_id,))
         row = cursor.fetchone()
@@ -268,7 +276,7 @@ def _can_call_gpt() -> bool:
     """GPT API 호출 가능 여부."""
     try:
         import openai  # noqa
-        return bool(os.environ.get("OPENAI_API_KEY"))
+        return bool(os.environ.get("OPENAI_API_KEY")) and live_api_enabled()
     except ImportError:
         return False
 
@@ -342,6 +350,10 @@ def _generate_gpt_response(message: str, sentiment: str, nickname: str) -> tuple
     """
     GPT-4o-mini로 추억 회상 대화 응답을 생성한다.
     """
+    if not live_api_enabled():
+        return _generate_mock_response(message, sentiment, nickname), False
+
+    reserved = False
     try:
         import openai
 
@@ -349,10 +361,15 @@ def _generate_gpt_response(message: str, sentiment: str, nickname: str) -> tuple
         if not api_key:
             return _generate_mock_response(message, sentiment, nickname), False
 
+        denied = reserve_openai_call()
+        if denied:
+            return _generate_mock_response(message, sentiment, nickname), False
+        reserved = True
+
         client = openai.OpenAI(
             api_key=api_key,
-            timeout=float(os.environ.get("OPENAI_TIMEOUT_SECONDS", "20")),
-            max_retries=1,
+            timeout=openai_timeout(),
+            max_retries=0,
         )
 
         system_prompt = f"""당신은 독거노인을 위한 따뜻한 추억 회상 대화 에이전트 '돌봄톡'입니다.
@@ -375,7 +392,7 @@ def _generate_gpt_response(message: str, sentiment: str, nickname: str) -> tuple
                 {"role": "user", "content": message}
             ],
             temperature=0.7,
-            max_tokens=200
+            max_tokens=max_output_tokens(200)
         )
 
         content = response.choices[0].message.content
@@ -384,8 +401,11 @@ def _generate_gpt_response(message: str, sentiment: str, nickname: str) -> tuple
         return _generate_mock_response(message, sentiment, nickname), False
 
     except Exception as e:
-        print(f"[오류] GPT 추억 대화 생성 실패: {e}. 템플릿으로 폴백합니다.", file=sys.stderr)
+        print(f"[오류] GPT 추억 대화 생성 실패({type(e).__name__}). 템플릿으로 폴백합니다.", file=sys.stderr)
         return _generate_mock_response(message, sentiment, nickname), False
+    finally:
+        if reserved:
+            release_openai_call()
 
 
 def _save_chat_log(
@@ -401,7 +421,7 @@ def _save_chat_log(
     checkin_responses 테이블을 재활용하여 별도 테이블 없이 기록.
     """
     try:
-        conn = sqlite3.connect(db_path, timeout=30)
+        conn = sqlite3.connect(db_path, timeout=1.0)
         cursor = conn.cursor()
         cursor.execute(
             """INSERT INTO checkin_responses
@@ -420,7 +440,7 @@ def _get_recent_topics(db_path: str, user_id: str, limit: int = 3) -> List[str]:
     최근 대화에서 언급된 주제 키워드를 조회한다.
     """
     try:
-        conn = sqlite3.connect(db_path, timeout=30)
+        conn = sqlite3.connect(db_path, timeout=1.0)
         cursor = conn.cursor()
         cursor.execute(
             """SELECT message FROM checkin_responses

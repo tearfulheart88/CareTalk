@@ -4,7 +4,9 @@ ENV PYTHONUNBUFFERED=1 \
     PYTHONUTF8=1 \
     LANG=C.UTF-8 \
     MCP_HOST=0.0.0.0 \
-    CARETALK_DB_PATH=/app/db/caretalk.db
+    CARETALK_DB_PATH=/app/db/caretalk.db \
+    MOCK_MODE=true \
+    LIVE_API_ENABLED=false
 
 WORKDIR /app
 

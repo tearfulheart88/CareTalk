@@ -200,7 +200,7 @@ def recommend_for_user(
     db_path = _get_db_path(db_path)
     _ensure_tables(db_path)
 
-    conn = sqlite3.connect(db_path, timeout=30)
+    conn = sqlite3.connect(db_path, timeout=1.0)
     cursor = conn.cursor()
     cursor.execute(
         """SELECT DISTINCT data_type FROM health_logs

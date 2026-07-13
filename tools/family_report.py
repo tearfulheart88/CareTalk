@@ -24,6 +24,14 @@ _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
+from services.usage_guard import (  # noqa: E402
+    live_api_enabled,
+    max_output_tokens,
+    openai_timeout,
+    release_openai_call,
+    reserve_openai_call,
+)
+
 # ============================================================
 # 상수 정의
 # ============================================================
@@ -107,7 +115,7 @@ def _aggregate_checkins(
             "nickname": str
         }
     """
-    conn = sqlite3.connect(db_path, timeout=30)
+    conn = sqlite3.connect(db_path, timeout=1.0)
     cursor = conn.cursor()
 
     # 기간 계산
@@ -555,6 +563,10 @@ def _gpt_generate_summary(
     Returns:
         자연어 요약 문자열
     """
+    if not live_api_enabled():
+        return "", False
+
+    reserved = False
     try:
         import openai
 
@@ -562,10 +574,15 @@ def _gpt_generate_summary(
         if not api_key:
             raise ValueError("OPENAI_API_KEY 환경 변수가 설정되지 않았습니다.")
 
+        denied = reserve_openai_call()
+        if denied:
+            return "", False
+        reserved = True
+
         client = openai.OpenAI(
             api_key=api_key,
-            timeout=float(os.environ.get("OPENAI_TIMEOUT_SECONDS", "20")),
-            max_retries=1,
+            timeout=openai_timeout(),
+            max_retries=0,
         )
 
         # 데이터 준비
@@ -612,7 +629,7 @@ def _gpt_generate_summary(
                 {"role": "user", "content": user_content}
             ],
             temperature=0.5,
-            max_tokens=400,
+            max_tokens=max_output_tokens(400),
             response_format={"type": "json_object"}
         )
 
@@ -625,9 +642,12 @@ def _gpt_generate_summary(
               file=sys.stderr)
         return "", False
     except Exception as e:
-        print(f"[오류] GPT 요약 생성 실패: {e}. 규칙 기반 요약으로 폴백합니다.",
+        print(f"[오류] GPT 요약 생성 실패({type(e).__name__}). 규칙 기반 요약으로 폴백합니다.",
               file=sys.stderr)
         return "", False
+    finally:
+        if reserved:
+            release_openai_call()
 
 
 # ============================================================
@@ -686,7 +706,7 @@ def generate_weekly_report(
             summary_text = _build_summary_text(aggregated, alert_items, report_type="weekly")
 
     # DB에 리포트 저장
-    conn = sqlite3.connect(db_path, timeout=30)
+    conn = sqlite3.connect(db_path, timeout=1.0)
     cursor = conn.cursor()
     cursor.execute("""
         INSERT INTO family_reports
@@ -757,7 +777,7 @@ def generate_daily_summary(
 
     today = datetime.now().strftime("%Y-%m-%d")
 
-    conn = sqlite3.connect(db_path, timeout=30)
+    conn = sqlite3.connect(db_path, timeout=1.0)
     cursor = conn.cursor()
 
     # 오늘의 체크인 기록 조회
@@ -860,7 +880,7 @@ if __name__ == "__main__":
     _ensure_tables(db_path)
 
     # 샘플 데이터가 있는지 확인
-    conn = sqlite3.connect(db_path, timeout=30)
+    conn = sqlite3.connect(db_path, timeout=1.0)
     cursor = conn.cursor()
     cursor.execute("SELECT COUNT(*) FROM checkins WHERE user_id = 'test_user_001'")
     count = cursor.fetchone()[0]
@@ -893,7 +913,7 @@ if __name__ == "__main__":
 
                 # DB에서 날짜 조작 (과거 데이터로)
                 past_date = (datetime.now() - timedelta(days=days_ago)).strftime("%Y-%m-%d")
-                conn = sqlite3.connect(db_path, timeout=30)
+                conn = sqlite3.connect(db_path, timeout=1.0)
                 cursor = conn.cursor()
                 cursor.execute(
                     "UPDATE checkins SET checkin_date = ?, created_at = ? WHERE id = ?",

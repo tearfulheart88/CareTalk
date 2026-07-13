@@ -61,6 +61,24 @@ test("필수 Tool 포함", all(n in tool_names for n in [
 ]), f"got {tool_names}")
 registered_tools = asyncio.run(server.mcp.list_tools())
 test("공식 FastMCP Tool 8개 등록", len(registered_tools) == 8, str([t.name for t in registered_tools]))
+for registered in registered_tools:
+    annotations = registered.annotations
+    test(f"{registered.name} annotations 있음", annotations is not None)
+    test(f"{registered.name} annotations.title 있음", bool(annotations and annotations.title))
+    test(
+        f"{registered.name} annotations 5개 완성",
+        annotations is not None
+        and annotations.readOnlyHint is not None
+        and annotations.destructiveHint is not None
+        and annotations.idempotentHint is not None
+        and annotations.openWorldHint is not None,
+        str(annotations),
+    )
+    test(
+        f"{registered.name} 영문 설명에 서비스명 포함",
+        "CareTalk(돌봄톡)" in (registered.description or ""),
+        registered.description or "",
+    )
 
 # === 2. daily_checkin ===
 print("\n[2] daily_checkin")
@@ -319,7 +337,81 @@ test("응급 detect 메시지 누락 차단", "error" in r, str(r)[:100])
 r = execute_tool("daily_checkin", {"user_id":"x" * 129,"action":"no_response"})
 test("과도하게 긴 사용자 ID 차단", "error" in r, str(r)[:100])
 
-# === 18. 정리 ===
+# === 18. 회귀: 공개 API 사용량·비밀값 보호 ===
+print("\n[18] 회귀: 공개 API 사용량·비밀값 보호")
+from services import usage_guard
+
+guard_keys = (
+    "MOCK_MODE", "LIVE_API_ENABLED", "CARETALK_USAGE_DB_PATH",
+    "OPENAI_DAILY_LIMIT", "OPENAI_RATE_LIMIT_PER_MINUTE",
+    "OPENAI_MAX_CONCURRENCY", "OPENAI_TIMEOUT_SECONDS", "OPENAI_API_KEY",
+)
+guard_original = {key: os.environ.get(key) for key in guard_keys}
+try:
+    set_mock_mode(False)
+    os.environ.pop("LIVE_API_ENABLED", None)
+    os.environ["OPENAI_API_KEY"] = "test-openai-secret"
+    test("키만 있어서는 실시간 API 비활성", usage_guard.live_api_enabled() is False)
+
+    import tools.emergency_detect as emergency_guard_module
+    fallback = emergency_guard_module._gpt_context_check("숨을 못 쉬겠어요")
+    test("opt-in 없으면 네트워크 전 규칙 폴백", fallback.get("analysis_available") is False, str(fallback))
+    from services.gpt_service import GPTService
+    legacy_fallback = GPTService(mock_mode=False).analyze_sentiment("기분이 좋아요")
+    test("기존 GPTService도 opt-in 없으면 규칙 폴백", legacy_fallback.get("sentiment") == "positive", str(legacy_fallback))
+
+    os.environ["LIVE_API_ENABLED"] = "true"
+    os.environ["CARETALK_USAGE_DB_PATH"] = os.path.join(tmp_dir, "usage.db")
+    os.environ["OPENAI_DAILY_LIMIT"] = "2"
+    os.environ["OPENAI_RATE_LIMIT_PER_MINUTE"] = "100"
+    os.environ["OPENAI_MAX_CONCURRENCY"] = "1"
+    usage_guard.reset_usage_guard()
+
+    first = usage_guard.reserve_openai_call()
+    second_while_busy = usage_guard.reserve_openai_call()
+    test("OpenAI 첫 호출 슬롯 허용", first is None, str(first))
+    test("OpenAI 동시 호출 1회 초과 차단", second_while_busy is not None, str(second_while_busy))
+    usage_guard.release_openai_call()
+
+    second = usage_guard.reserve_openai_call()
+    usage_guard.release_openai_call()
+    third = usage_guard.reserve_openai_call()
+    test("OpenAI 일일 2회까지 허용", second is None, str(second))
+    test("OpenAI 일일 3회차 차단", third is not None and "한도" in third, str(third))
+
+    usage_guard.reset_usage_guard()
+    os.environ["OPENAI_DAILY_LIMIT"] = "10"
+    os.environ["OPENAI_RATE_LIMIT_PER_MINUTE"] = "1"
+    minute_first = usage_guard.reserve_openai_call()
+    usage_guard.release_openai_call()
+    minute_second = usage_guard.reserve_openai_call()
+    test(
+        "OpenAI 분당 1회 초과 차단",
+        minute_first is None and minute_second is not None and "1분" in minute_second,
+        str(minute_second),
+    )
+
+    os.environ["OPENAI_TIMEOUT_SECONDS"] = "99"
+    test("OpenAI 타임아웃 2.5초 상한", usage_guard.openai_timeout() == 2.5)
+    secret_text = usage_guard.redact_secrets(
+        "https://example.test?a=1&api_key=test-openai-secret Authorization: Bearer bearer-secret"
+    )
+    test(
+        "API 키와 Bearer 토큰 마스킹",
+        "test-openai-secret" not in secret_text and "bearer-secret" not in secret_text,
+        secret_text,
+    )
+finally:
+    usage_guard.release_openai_call()
+    usage_guard.reset_usage_guard()
+    for key, value in guard_original.items():
+        if value is None:
+            os.environ.pop(key, None)
+        else:
+            os.environ[key] = value
+    set_mock_mode(True)
+
+# === 19. 정리 ===
 print("\n" + "=" * 60)
 print(f"결과: ✅ {passed}개 통과 / ❌ {failed}개 실패")
 print("=" * 60)

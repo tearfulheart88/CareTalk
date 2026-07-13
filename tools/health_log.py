@@ -298,7 +298,7 @@ def log_health_data(
     advice = RISK_MESSAGES.get(status, "")
 
     # DB에 기록
-    conn = sqlite3.connect(db_path, timeout=30)
+    conn = sqlite3.connect(db_path, timeout=1.0)
     cursor = conn.cursor()
 
     # 사용자 자동 등록
@@ -429,7 +429,7 @@ def query_health_data(
 
     start_date = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d 00:00:00")
 
-    conn = sqlite3.connect(db_path, timeout=30)
+    conn = sqlite3.connect(db_path, timeout=1.0)
     cursor = conn.cursor()
 
     if data_type:
@@ -519,7 +519,7 @@ def analyze_health_trend(
 
     start_date = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d 00:00:00")
 
-    conn = sqlite3.connect(db_path, timeout=30)
+    conn = sqlite3.connect(db_path, timeout=1.0)
     cursor = conn.cursor()
 
     # 분석할 data_type 목록

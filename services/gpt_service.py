@@ -23,6 +23,14 @@ import json
 import re
 from typing import List, Dict, Any, Optional
 
+from services.usage_guard import (
+    live_api_enabled,
+    max_output_tokens,
+    openai_timeout,
+    release_openai_call,
+    reserve_openai_call,
+)
+
 # OpenAI 클라이언트 (실제 API 호출용)
 try:
     from openai import OpenAI
@@ -36,13 +44,16 @@ except ImportError:
 # Mock 모드 설정
 # ═══════════════════════════════════════════════════════════════════
 # 환경 변수 MOCK_MODE 또는 생성자 인자로 제어
-_MOCK_MODE = os.environ.get("MOCK_MODE", "false").lower() == "true"
+_MOCK_MODE = os.environ.get("MOCK_MODE", "true").lower() == "true"
 
 
 def set_mock_mode(enabled: bool) -> None:
     """Mock 모드를 전역적으로 설정/해제합니다."""
     global _MOCK_MODE
     _MOCK_MODE = enabled
+    os.environ["MOCK_MODE"] = "true" if enabled else "false"
+    if enabled:
+        os.environ["LIVE_API_ENABLED"] = "false"
 
 
 def is_mock_mode() -> bool:
@@ -122,8 +133,12 @@ class GPTService:
         self._mock_mode = mock_mode if mock_mode is not None else _MOCK_MODE
 
         # 실제 API 클라이언트 초기화 (Mock 모드가 아닐 때만)
-        if not self._mock_mode and OPENAI_AVAILABLE and self._api_key:
-            self._client = OpenAI(api_key=self._api_key)
+        if not self._mock_mode and live_api_enabled() and OPENAI_AVAILABLE and self._api_key:
+            self._client = OpenAI(
+                api_key=self._api_key,
+                timeout=openai_timeout(),
+                max_retries=0,
+            )
         else:
             self._client = None
 
@@ -144,16 +159,22 @@ class GPTService:
         if self._mock_mode or self._client is None:
             raise RuntimeError("GPT API를 호출할 수 없습니다. Mock 모드를 활성화하거나 API 키를 설정하세요.")
 
-        response = self._client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_message}
-            ],
-            max_tokens=max_tokens,
-            temperature=0.3,  # 일관된 분석 결과를 위해 낮은 temperature
-            response_format={"type": "json_object"}  # JSON 응답 강제
-        )
+        denied = reserve_openai_call()
+        if denied:
+            raise RuntimeError("OpenAI usage guard denied the request")
+        try:
+            response = self._client.chat.completions.create(
+                model=os.environ.get("OPENAI_MODEL", "gpt-4o-mini"),
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_message}
+                ],
+                max_tokens=max_output_tokens(max_tokens),
+                temperature=0.3,
+                response_format={"type": "json_object"}
+            )
+        finally:
+            release_openai_call()
 
         content = response.choices[0].message.content
         if content is None:
@@ -330,10 +351,13 @@ class GPTService:
                 "reason": "분석 근거"
             }
         """
-        if self._mock_mode:
+        if self._mock_mode or self._client is None:
             return self._mock_analyze_sentiment(message)
 
-        return self._call_gpt(self.SENTIMENT_SYSTEM_PROMPT, message, max_tokens=100)
+        try:
+            return self._call_gpt(self.SENTIMENT_SYSTEM_PROMPT, message, max_tokens=100)
+        except Exception:
+            return self._mock_analyze_sentiment(message)
 
     def extract_health_keywords(self, message: str) -> Dict[str, Any]:
         """
@@ -348,10 +372,13 @@ class GPTService:
                 "has_health_concern": true | false
             }
         """
-        if self._mock_mode:
+        if self._mock_mode or self._client is None:
             return self._mock_extract_health_keywords(message)
 
-        return self._call_gpt(self.HEALTH_KEYWORDS_SYSTEM_PROMPT, message, max_tokens=100)
+        try:
+            return self._call_gpt(self.HEALTH_KEYWORDS_SYSTEM_PROMPT, message, max_tokens=100)
+        except Exception:
+            return self._mock_extract_health_keywords(message)
 
     def confirm_emergency(self, message: str, keywords: Optional[List[str]] = None) -> Dict[str, Any]:
         """
@@ -369,12 +396,15 @@ class GPTService:
                 "recommended_action": "권장 조치"
             }
         """
-        if self._mock_mode:
+        if self._mock_mode or self._client is None:
             return self._mock_confirm_emergency(message, keywords or [])
 
         # GPT 호출용 메시지 구성
         user_content = f"사용자 메시지: {message}\n감지된 위험 키워드: {keywords or '없음'}"
-        return self._call_gpt(self.EMERGENCY_SYSTEM_PROMPT, user_content, max_tokens=150)
+        try:
+            return self._call_gpt(self.EMERGENCY_SYSTEM_PROMPT, user_content, max_tokens=150)
+        except Exception:
+            return self._mock_confirm_emergency(message, keywords or [])
 
     def generate_checkin_message(self, nickname: str) -> str:
         """
@@ -404,7 +434,7 @@ class GPTService:
                 "alert": true | false
             }
         """
-        if self._mock_mode:
+        if self._mock_mode or self._client is None:
             # Mock 모드: 통계 기반 규칙 요약
             response_rate = stats.get("response_rate", 0)
             sentiment_dist = stats.get("sentiment_distribution", {})
@@ -429,7 +459,10 @@ class GPTService:
         # 실제 GPT 호출
         stats_json = json.dumps(stats, ensure_ascii=False)
         user_content = f"사용자: {nickname}님\n주간 통계: {stats_json}"
-        return self._call_gpt(self.REPORT_SYSTEM_PROMPT, user_content, max_tokens=150)
+        try:
+            return self._call_gpt(self.REPORT_SYSTEM_PROMPT, user_content, max_tokens=150)
+        except Exception:
+            return GPTService(api_key="", mock_mode=True).generate_report_summary(stats, nickname)
 
 
 # ═══════════════════════════════════════════════════════════════════

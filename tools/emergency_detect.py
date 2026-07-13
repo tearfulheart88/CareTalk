@@ -24,6 +24,14 @@ _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
+from services.usage_guard import (  # noqa: E402
+    live_api_enabled,
+    max_output_tokens,
+    openai_timeout,
+    release_openai_call,
+    reserve_openai_call,
+)
+
 # ============================================================
 # 상수 정의
 # ============================================================
@@ -172,6 +180,16 @@ def _gpt_context_check(message: str, context: Optional[Dict[str, Any]] = None) -
             "explanation": "..."
         }
     """
+    fallback = {
+        "is_real_emergency": True,
+        "adjusted_level": "none",
+        "explanation": "AI 분석 불가 — 규칙 기반 위험 등급을 유지합니다.",
+        "analysis_available": False,
+    }
+    if not live_api_enabled():
+        return fallback
+
+    reserved = False
     try:
         import openai
 
@@ -179,10 +197,15 @@ def _gpt_context_check(message: str, context: Optional[Dict[str, Any]] = None) -
         if not api_key:
             raise ValueError("OPENAI_API_KEY 환경 변수가 설정되지 않았습니다.")
 
+        denied = reserve_openai_call()
+        if denied:
+            return fallback
+        reserved = True
+
         client = openai.OpenAI(
             api_key=api_key,
-            timeout=float(os.environ.get("OPENAI_TIMEOUT_SECONDS", "20")),
-            max_retries=1,
+            timeout=openai_timeout(),
+            max_retries=0,
         )
 
         # 컨텍스트 정보 구성
@@ -228,7 +251,7 @@ def _gpt_context_check(message: str, context: Optional[Dict[str, Any]] = None) -
                 {"role": "user", "content": user_content}
             ],
             temperature=0.1,
-            max_tokens=300,
+            max_tokens=max_output_tokens(300),
             response_format={"type": "json_object"}
         )
 
@@ -246,14 +269,9 @@ def _gpt_context_check(message: str, context: Optional[Dict[str, Any]] = None) -
     except ImportError:
         print("[경고] openai 패키지가 설치되지 않았습니다. 컨텍스트 확인을 건너뜁니다.",
               file=sys.stderr)
-        return {
-            "is_real_emergency": True,
-            "adjusted_level": "none",
-            "explanation": "GPT 분석 불가 — 규칙 기반 위험 등급을 유지합니다.",
-            "analysis_available": False,
-        }
+        return fallback
     except Exception as e:
-        print(f"[오류] GPT 컨텍스트 확인 실패: {e}. 키워드 매칭 결과를 그대로 사용합니다.",
+        print(f"[오류] GPT 컨텍스트 확인 실패({type(e).__name__}). 키워드 매칭 결과를 그대로 사용합니다.",
               file=sys.stderr)
         return {
             "is_real_emergency": True,
@@ -261,6 +279,9 @@ def _gpt_context_check(message: str, context: Optional[Dict[str, Any]] = None) -
             "explanation": f"GPT 분석 오류 — 규칙 기반 위험 등급 유지 ({type(e).__name__})",
             "analysis_available": False,
         }
+    finally:
+        if reserved:
+            release_openai_call()
 
 
 # ============================================================
@@ -430,7 +451,7 @@ def detect_emergency(
         )
 
     # DB에 위험 감지 기록 저장
-    conn = sqlite3.connect(db_path, timeout=30)
+    conn = sqlite3.connect(db_path, timeout=1.0)
     cursor = conn.cursor()
     cursor.execute("""
         INSERT INTO emergency_logs
@@ -489,7 +510,7 @@ def check_silence_alert(
     db_path = _get_db_path(db_path)
     _ensure_tables(db_path)
 
-    conn = sqlite3.connect(db_path, timeout=30)
+    conn = sqlite3.connect(db_path, timeout=1.0)
     cursor = conn.cursor()
 
     # 마지막 응답 시간 조회 (checkin_responses 테이블)
@@ -550,7 +571,7 @@ def check_silence_alert(
         )
 
         # DB에 무응답 경보 기록
-        conn = sqlite3.connect(db_path, timeout=30)
+        conn = sqlite3.connect(db_path, timeout=1.0)
         cursor = conn.cursor()
         # 중복 기록 방지: 최근 24시간 내 unresolved alert 확인
         cursor.execute("""

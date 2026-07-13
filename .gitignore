@@ -21,6 +21,10 @@ db/caretalk.db
 db/caretalk.db-journal
 db/caretalk.db-wal
 db/caretalk.db-shm
+db/*.db
+db/*.db-journal
+db/*.db-wal
+db/*.db-shm
 _db_backup/
 
 # IDE

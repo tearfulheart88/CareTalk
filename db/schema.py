@@ -148,7 +148,7 @@ def ensure_schema(db_path: str = DB_PATH) -> None:
     parent = os.path.dirname(os.path.abspath(db_path))
     if parent:
         os.makedirs(parent, exist_ok=True)
-    conn = sqlite3.connect(db_path)
+    conn = sqlite3.connect(db_path, timeout=1.0)
     try:
         conn.executescript(SCHEMA_SQL)
         # 마이그레이션: 기존 DB의 health_logs에 source 컬럼이 없으면 추가
@@ -173,7 +173,7 @@ def init_db(db_path: str = DB_PATH) -> sqlite3.Connection:
         sqlite3.Connection: WAL 모드로 열린 데이터베이스 연결 객체
     """
     ensure_schema(db_path)
-    conn = sqlite3.connect(db_path, timeout=30)
+    conn = sqlite3.connect(db_path, timeout=1.0)
     conn.execute("PRAGMA foreign_keys = ON")
     conn.execute("PRAGMA journal_mode = WAL")  # 동시성 향상
     return conn
@@ -185,7 +185,7 @@ def init_db(db_path: str = DB_PATH) -> sqlite3.Connection:
 
 def get_connection(db_path: str = DB_PATH) -> sqlite3.Connection:
     """데이터베이스 연결을 반환합니다. 연결이 필요할 때마다 호출."""
-    conn = sqlite3.connect(db_path, timeout=30)
+    conn = sqlite3.connect(db_path, timeout=1.0)
     conn.execute("PRAGMA foreign_keys = ON")
     conn.execute("PRAGMA journal_mode = WAL")
     conn.row_factory = sqlite3.Row  # 결과를 dict-like Row 객체로 반환
