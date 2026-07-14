@@ -742,8 +742,16 @@ r = execute_tool("emergency_detect", {"user_id":"senior_001","action":"detect","
 test("'살려주세요' → red 유지", r.get("risk_level") == "red", str(r)[:100])
 r = execute_tool("emergency_detect", {"user_id":"senior_001","action":"detect","message":"숨을 못 쉬겠어요"})
 test("'숨을 못 쉬겠어요' → red", r.get("risk_level") == "red", str(r)[:100])
+r = execute_tool("emergency_detect", {"user_id":"senior_001","action":"detect","message":"혈압 140/85, 가슴 통증, 숨쉬기 어려움"})
+test("'가슴 통증+숨쉬기 어려움' → red", r.get("risk_level") == "red", str(r)[:140])
+test("호흡곤란 RED는 즉시 119 안내", r.get("emergency_contact") == "119" and "즉시 119" in r.get("recommended_action", ""), str(r)[:180])
+test("호흡곤란 RED는 30분 대기 금지", "30분" not in r.get("recommended_action", ""), str(r)[:180])
+r = execute_tool("emergency_detect", {"user_id":"senior_001","action":"detect","message":"지금 숨을 쉬기 힘들어요"})
+test("'숨을 쉬기 힘들어요' → red", r.get("risk_level") == "red", str(r)[:140])
 r = execute_tool("emergency_detect", {"user_id":"senior_001","action":"detect","message":"어지러워도 괜찮아 걱정 마"})
 test("'어지러워+괜찮아' → none (안심 표현 YELLOW 하향)", r.get("risk_level") == "none", str(r)[:100])
+r = execute_tool("emergency_detect", {"user_id":"senior_001","action":"detect","message":"혈압 140/85"})
+test("위험어 미감지는 응급 아님으로 확정하지 않음", r.get("emergency_assessment") == "not_confirmed" and "확정하지 마세요" in r.get("recommended_action", ""), str(r)[:180])
 
 # === 12. 회귀: 시간대 (무응답 경보) ===
 print("\n[12] 회귀: 시간대(UTC/로컬) 무응답 계산")

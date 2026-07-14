@@ -42,6 +42,10 @@ from services.usage_guard import (  # noqa: E402
 RED_KEYWORDS = [
     "쓰러졌어", "쓰러졌", "쓰러지", "의식을 잃", "의식이 없",
     "숨이 안 쉬어져", "숨을 못 쉬", "호흡 곤란", "호흡이 멈",
+    "숨쉬기 어렵", "숨 쉬기 어렵", "숨을 쉬기 어렵",
+    "숨쉬기 어려", "숨 쉬기 어려", "숨을 쉬기 어려",
+    "숨쉬기 힘들", "숨 쉬기 힘들", "숨을 쉬기 힘들",
+    "호흡이 어렵", "호흡이 어려", "호흡이 힘들", "숨이 막혀", "숨이 막히",
     "심장 마비", "심장이 멈", "심장 발작",
     "피가 많이 나", "피를 많이", "출혈", "과다 출혈",
     "못 일어나", "일어나지 못", "몸을 못 움직", "마비",
@@ -345,12 +349,20 @@ def detect_emergency(
         return {
             "risk_level": "none",
             "detected_keywords": [],
-            "recommended_action": "위험 신호 없음 — 정상 응답으로 처리",
+            "recommended_action": (
+                "현재 메시지에서 명시적 응급 증상 표현은 감지되지 않았습니다. "
+                "이 결과만으로 '응급 상황이 아님'을 확정하지 마세요. "
+                "흉통·호흡곤란·의식저하 등 현재 위급 증상이 있으면 즉시 119에 직접 연락하세요."
+            ),
             "notify_targets": [],
             "mock_mode": True,
             "analysis_source": "rules",
             "context_safe": True,
-            "explanation": "위험 키워드 미감지"
+            "explanation": "명시적 위험 증상 키워드 미감지 — 응급 여부 확정 아님",
+            "emergency_contact": None,
+            "dispatch_performed": False,
+            "emergency_assessment": "not_confirmed",
+            "not_an_emergency_diagnosis": True,
         }
 
     # 컨텍스트 패턴 확인 (규칙 기반)
@@ -480,6 +492,12 @@ def detect_emergency(
         "explanation": explanation,
         "emergency_contact": "119" if final_level == "red" else None,
         "dispatch_performed": False,
+        "emergency_assessment": (
+            "red_signal" if final_level == "red"
+            else "needs_follow_up" if final_level == "yellow"
+            else "not_confirmed"
+        ),
+        "not_an_emergency_diagnosis": final_level == "none",
     }
 
 
