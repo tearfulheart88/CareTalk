@@ -159,6 +159,13 @@ test("parse(135/85) diastolic=85", r.get("parsed",{}).get("diastolic") == 85.0, 
 test("parse(135/85) systolic warning", r.get("results",[{}])[0].get("status") == "warning", str(r)[:100])
 test("parse(135/85) diastolic warning", r.get("results",[{},{}])[1].get("status") == "warning", str(r)[:100])
 
+r = execute_tool("health_log", {"user_id":"senior_001","action":"parse","message":"혈압은 135에 85이고 혈당은 110이에요","nickname":"순자"})
+test(
+    "한 문장 복수 건강 수치 모두 기록",
+    r.get("parsed", {}).get("blood_sugar") == 110.0 and len(r.get("results", [])) == 3,
+    str(r)[:180],
+)
+
 r = execute_tool("health_log", {"user_id":"senior_001","action":"parse","message":"오늘 혈압 135 85요","nickname":"순자"})
 test("parse(135 85) systolic=135", r.get("parsed",{}).get("systolic") == 135.0, str(r)[:100])
 test("parse(135 85) diastolic=85", r.get("parsed",{}).get("diastolic") == 85.0, str(r)[:100])

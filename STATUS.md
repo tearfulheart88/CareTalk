@@ -7,7 +7,7 @@
 - 공식 `FastMCP` 기반 stateless Streamable HTTP 서버
 - endpoint `/mcp`, health endpoint `/health`
 - Tool 9개 등록
-- 직접 함수 E2E 153개 회귀 케이스 통과
+- 직접 함수 E2E 154개 회귀 케이스 통과
 - 공식 MCP Python 클라이언트로 initialize, tools/list, tools/call 통과
 - 실제 Streamable HTTP Mock 호출 13.4ms(로컬 1회 측정, 환경에 따라 변동)
 - 9개 Tool의 PlayMCP annotations 5개와 한·영 설명 검증 통과
@@ -34,6 +34,7 @@
 16. 전화번호·주소·이메일 입력을 차단하고 동의 전 안전계획을 활성 상태로 오인하지 않게 했습니다.
 17. 단일 혈압 140/90을 RED로 과장하던 기준을 보정하고 재측정 맥락과 공식 근거 링크를 추가했습니다.
 18. 체중은 개인 기준 없이 절대값으로 위험 판정하지 않고 변화 추세만 분석하도록 보정했습니다.
+19. 한 문장에 혈압·혈당 등 여러 건강 수치가 함께 들어와도 모두 기록하도록 파서를 개선했습니다.
 
 ## 검증 명령
 

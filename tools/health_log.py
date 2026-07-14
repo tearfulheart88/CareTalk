@@ -216,6 +216,17 @@ def _parse_blood_pressure_pair(message: str) -> Optional[tuple]:
     return None
 
 
+def _parse_named_value(message: str, aliases: tuple[str, ...]) -> Optional[float]:
+    """Extract a number placed directly after one of the named health metrics."""
+    alias_pattern = "|".join(re.escape(alias) for alias in aliases)
+    match = re.search(
+        rf"(?:{alias_pattern})\s*(?:은|는|이|가|을|를)?\s*(?:[:=]\s*)?(\d+(?:\.\d+)?)",
+        message,
+        re.IGNORECASE,
+    )
+    return float(match.group(1)) if match else None
+
+
 def _resolve_data_type(user_input: str) -> Optional[str]:
     """
     사용자 입력에서 표준 data_type을 판별한다.
@@ -734,55 +745,71 @@ def log_from_message(
     db_path = _get_db_path(db_path)
     _ensure_tables(db_path)
 
-    # data_type 판별
-    resolved_type = _resolve_data_type(message)
+    parsed: Dict[str, float] = {}
+    results: List[Dict[str, Any]] = []
 
-    if not resolved_type:
-        return {
-            "error": "건강 데이터 타입을 인식할 수 없습니다. "
-                     "혈압, 혈당, 체중, 체온, 맥박 중 하나를 입력해 주세요."
-        }
-
-    # 혈압: 수축기/이완기 쌍으로 기록
-    if resolved_type in ("systolic", "diastolic", "blood_pressure"):
-        pair = _parse_blood_pressure_pair(message)
-        if pair:
-            systolic, diastolic = pair
-            result_sys = log_health_data(user_id, "systolic", systolic, nickname, db_path, source)
-            result_dia = log_health_data(user_id, "diastolic", diastolic, nickname, db_path, source)
-            return {
-                "parsed": {"systolic": systolic, "diastolic": diastolic},
-                "results": [result_sys, result_dia],
-                "message": (
-                    f"혈압 {int(systolic)}/{int(diastolic)} 기록 완료! "
-                    f"수축기: {result_sys.get('status','?')}, 이완기: {result_dia.get('status','?')}"
-                )
-            }
-        else:
-            # 단일 숫자 → 수축기만
-            value = _parse_health_value(message, "systolic")
+    pair = _parse_blood_pressure_pair(message) if "혈압" in message else None
+    if pair:
+        parsed["systolic"], parsed["diastolic"] = pair
+    else:
+        for data_type, aliases in (
+            ("systolic", ("수축기",)),
+            ("diastolic", ("이완기",)),
+        ):
+            value = _parse_named_value(message, aliases)
             if value is not None:
-                result = log_health_data(user_id, "systolic", value, nickname, db_path, source)
-                return {
-                    "parsed": {"systolic": value},
-                    "results": [result],
-                    "message": f"수축기 혈압 {int(value)} 기록 완료!"
-                }
+                parsed[data_type] = value
 
-    # 기타 단일 수치
-    value = _parse_health_value(message, resolved_type)
-    if value is None:
-        return {
-            "error": f"메시지에서 {resolved_type} 수치를 찾을 수 없습니다. "
-                     f"예: '혈당 110이에요', '체중 62kg'"
-        }
+        # "혈압 135"처럼 한 값만 있는 기존 입력은 수축기로 유지한다.
+        if "혈압" in message and "systolic" not in parsed:
+            value = _parse_named_value(message, ("혈압",))
+            if value is not None:
+                parsed["systolic"] = value
 
-    result = log_health_data(user_id, resolved_type, value, nickname, db_path, source)
-    return {
-        "parsed": {resolved_type: value},
-        "results": [result],
-        "message": f"{result.get('label','건강 데이터')} {value}{result.get('unit','')} 기록 완료!"
-    }
+    for data_type, aliases in (
+        ("blood_sugar", ("혈당",)),
+        ("weight", ("체중", "몸무게")),
+        ("temperature", ("체온",)),
+        ("heart_rate", ("맥박", "심박")),
+    ):
+        value = _parse_named_value(message, aliases)
+        if value is not None:
+            parsed[data_type] = value
+
+    if not parsed:
+        resolved_type = _resolve_data_type(message)
+        if not resolved_type:
+            return {
+                "error": "건강 데이터 타입을 인식할 수 없습니다. "
+                         "혈압, 혈당, 체중, 체온, 맥박 중 하나를 입력해 주세요."
+            }
+        fallback_type = "systolic" if resolved_type == "blood_pressure" else resolved_type
+        value = _parse_health_value(message, fallback_type)
+        if value is None:
+            return {
+                "error": f"메시지에서 {fallback_type} 수치를 찾을 수 없습니다. "
+                         "예: '혈당 110이에요', '체중 62kg'"
+            }
+        parsed[fallback_type] = value
+
+    for data_type, value in parsed.items():
+        results.append(log_health_data(user_id, data_type, value, nickname, db_path, source))
+
+    if list(parsed) == ["systolic", "diastolic"]:
+        systolic = parsed["systolic"]
+        diastolic = parsed["diastolic"]
+        message_text = (
+            f"혈압 {int(systolic)}/{int(diastolic)} 기록 완료! "
+            f"수축기: {results[0].get('status','?')}, 이완기: {results[1].get('status','?')}"
+        )
+    else:
+        summaries = [
+            f"{result.get('label', data_type)} {value:g}{result.get('unit', '')}"
+            for (data_type, value), result in zip(parsed.items(), results)
+        ]
+        message_text = f"건강 수치 {len(results)}건 기록 완료: " + ", ".join(summaries)
+
+    return {"parsed": parsed, "results": results, "message": message_text}
 
 
 # ============================================================
