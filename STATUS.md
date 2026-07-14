@@ -6,11 +6,11 @@
 
 - 공식 `FastMCP` 기반 stateless Streamable HTTP 서버
 - endpoint `/mcp`, health endpoint `/health`
-- Tool 9개 등록
-- 직접 함수 E2E 154개 회귀 케이스 통과
+- Tool 10개 등록
+- 직접 함수 E2E 172개 회귀 케이스 통과
 - 공식 MCP Python 클라이언트로 initialize, tools/list, tools/call 통과
 - 실제 Streamable HTTP Mock 호출 13.4ms(로컬 1회 측정, 환경에 따라 변동)
-- 9개 Tool의 PlayMCP annotations 5개와 한·영 설명 검증 통과
+- 10개 Tool의 PlayMCP annotations 5개와 한·영 설명 검증 통과
 - Mock/규칙 모드와 OpenAI 실모드 폴백 경로 분리
 - PlayMCP in KC용 Dockerfile 준비
 
@@ -29,12 +29,16 @@
 11. 공개 배포 기본값을 `MOCK_MODE=true`, `LIVE_API_ENABLED=false`인 keyless 모드로 변경했습니다.
 12. 모든 OpenAI 경로에 SQLite 일일 쿼터, 분당·동시 호출 제한을 공통 적용했습니다.
 13. 오류 로그에서 API 키·Bearer 토큰을 제거하고 네트워크 실패 시 규칙 응답으로 폴백합니다.
-14. 9개 Tool별 한·영 설명과 `title`, annotations 5개를 모두 명시했습니다.
+14. 모든 Tool별 한·영 설명과 `title`, annotations 5개를 모두 명시했습니다.
 15. 당사자 동의·접근성·단계적 사람 확인을 설계하는 `build_care_safety_plan`을 추가했습니다.
 16. 전화번호·주소·이메일 입력을 차단하고 동의 전 안전계획을 활성 상태로 오인하지 않게 했습니다.
 17. 단일 혈압 140/90을 RED로 과장하던 기준을 보정하고 재측정 맥락과 공식 근거 링크를 추가했습니다.
 18. 체중은 개인 기준 없이 절대값으로 위험 판정하지 않고 변화 추세만 분석하도록 보정했습니다.
 19. 한 문장에 혈압·혈당 등 여러 건강 수치가 함께 들어와도 모두 기록하도록 파서를 개선했습니다.
+20. 첫 실행 목적·대상별 사용법·추천 답변·접근성·FAQ·개인정보 안내를 제공하는 `care_guide`를 추가했습니다.
+21. 시간대별로 식사·복약·수면·통증·도움 요청을 한 번에 선택하는 안부 버튼 5개를 제공합니다.
+22. 안부 분석 후에도 긍정·중립·통증·정서 어려움·위급 신호별 후속 버튼을 다시 생성합니다.
+23. 어르신용 위젯은 짧은 줄과 고정 선택지를 사용하고 모든 상태에서 `도움이 필요해요`를 유지합니다.
 
 ## 검증 명령
 

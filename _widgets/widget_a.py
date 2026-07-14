@@ -7,7 +7,7 @@ SimpleText + quickReplies 조합으로 구성됩니다.
 
 MVP 스펙 (기획서 섹션 6.2):
   - SimpleText: 오늘 기분, 날씨, 건강 팁, 안부 연속 기록
-  - quickReplies: 건강 체크, 가족에게 전화, 오늘 식단 (최대 3개)
+  - quickReplies: 안부·식사·약·통증·도움 요청 원터치 답변 (5개)
 
 Kakao Tools Widget JSON v2.0 스펙 준수.
 
@@ -28,7 +28,7 @@ WIDGET_NAME = "daily_care_widget"
 WIDGET_DESCRIPTION = (
     "노인 사용자용 '오늘의 돌봄' Widget. "
     "SimpleText로 오늘의 안부 상태·날씨·건강 팁을 표시하고, "
-    "quickReplies로 건강 체크·가족 전화·식단 추천을 제공합니다."
+    "quickReplies로 안부·식사·약·통증·도움 요청을 한 번에 선택하게 합니다."
 )
 
 
@@ -91,17 +91,22 @@ def create_daily_care_widget(
 
     greeting = _get_time_greeting()
     simple_text = (
-        f"{greeting} {nickname}님!\n\n"
+        f"{greeting} {nickname}님.\n\n"
         f"오늘 기분: {today_mood}\n"
         f"오늘 날씨: {weather_condition}, {weather_temp}°C\n"
-        f"팁: {weather_advice}\n\n"
-        f"어제까지 {streak_info}일 연속 안부 확인 완료"
+        f"오늘 팁: {weather_advice}\n\n"
+        f"안부 기록: {streak_info}일 연속\n\n"
+        "지금 상태와 가까운 버튼을\n하나만 눌러 주세요."
     )
 
+    labels = {
+        "positive": ["오늘은 괜찮아요", "밥 먹었어요", "약 먹었어요", "산책했어요", "도움이 필요해요"],
+        "neutral": ["오늘은 괜찮아요", "밥 먹었어요", "약 먹었어요", "조금 피곤해요", "도움이 필요해요"],
+        "negative": ["조금 아파요", "조금 외로워요", "쉬고 싶어요", "가족에게 전화", "도움이 필요해요"],
+    }.get(today_sentiment, ["괜찮아요", "밥 먹었어요", "약 먹었어요", "조금 아파요", "도움이 필요해요"])
     quick_replies = [
-        {"label": "건강 체크", "action": "message", "messageText": "건강 체크할게요"},
-        {"label": "가족에게 전화", "action": "message", "messageText": "가족에게 전화"},
-        {"label": "오늘 식단", "action": "message", "messageText": "오늘 식단 알려줘"}
+        {"label": label, "action": "message", "messageText": label}
+        for label in labels
     ]
 
     return {
@@ -202,5 +207,5 @@ if __name__ == "__main__":
     print(json.dumps(widget, ensure_ascii=False, indent=2))
     assert widget["version"] == "2.0"
     assert widget["template"]["outputs"][0]["simpleText"]["text"]
-    assert len(widget["template"]["quickReplies"]) == 3
+    assert len(widget["template"]["quickReplies"]) == 5
     print("\n✅ Widget A 렌더링 검증 통과")

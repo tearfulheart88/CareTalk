@@ -9,6 +9,10 @@
 
 ## 대표 경험
 
+처음 실행하면 어르신에게 서비스 목적과 자동 신고 여부를 짧고 큰 문장으로 설명하고,
+`오늘은 괜찮아요`, `밥 먹었어요`, `조금 아파요`, `도움이 필요해요` 같은 선택 버튼을 먼저 보여줍니다.
+글을 길게 쓰지 않아도 버튼 한 번으로 안부와 다음 확인을 이어갈 수 있습니다.
+
 가족이 안부 시간·응답 여유·확인 역할·접근성 요구를 말하면 돌봄톡은 먼저 동의가 필요한
 안전계획 초안을 만듭니다. 안부 확인, 자연어 건강 기록, 위급 신호, 가족 요약을 함께 검토할 수
 있으며 실제 신고나 발송을 했다고 오인시키지 않습니다.
@@ -23,7 +27,7 @@
 - OpenAI 키 설정 시 감정 분석, 응급 맥락 확인, 회상 대화, 리포트 요약에 LLM 사용
 - 키가 있어도 명시적 live opt-in 없이는 OpenAI 네트워크 호출 차단
 - SQLite 일일 한도, 분당·동시 호출 제한, 2.5초 타임아웃 상한 적용
-- PlayMCP 필수 Tool annotations 5개를 9개 Tool에 모두 명시
+- PlayMCP 필수 Tool annotations 5개를 10개 Tool에 모두 명시
 - SQLite 기반 체크인·건강 기록·리포트 연결
 - 카카오 응답 포맷용 Widget A/B JSON 생성
 - 직접 함수 E2E와 실제 MCP 클라이언트 핸드셰이크 검증
@@ -32,6 +36,7 @@
 
 | Tool | 기능 | 주요 action |
 |---|---|---|
+| `care_guide` | 어르신·가족 첫 안내, 추천 답변, 접근성, FAQ, 개인정보 | `start`, `examples`, `faq`, `accessibility`, `privacy` |
 | `daily_checkin` | 안부 메시지 생성, 응답 분석, 무응답 확인 | `initiate`, `analyze`, `no_response` |
 | `emergency_detect` | 위험 표현과 장기 무응답을 보수적으로 판정 | `detect`, `silence` |
 | `family_report` | 일일·주간 가족 리포트 생성 | `daily`, `weekly` |
@@ -105,13 +110,13 @@ python _e2e_test.py
 python -m compileall -q .
 ```
 
-현재 E2E 검증은 154개이며, 실제 Streamable HTTP 클라이언트로 9개 Tool metadata,
+현재 E2E 검증은 172개이며, 실제 Streamable HTTP 클라이언트로 10개 Tool metadata,
 대표 호출, 오류 응답의 MCP `isError`도 확인합니다.
 
 실제 MCP 연결은 공식 Python SDK의 `streamable_http_client`로 다음 순서를 검증합니다.
 
 1. `initialize`
-2. `tools/list`에서 9개 Tool 확인
+2. `tools/list`에서 10개 Tool 확인
 3. `tools/call` 대표 시나리오 호출
 4. 오류 Tool의 MCP `isError` 확인
 

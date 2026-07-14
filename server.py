@@ -145,6 +145,7 @@ def _get_mock_weather():
     return {"condition": "맑음", "temp": 24, "advice": "산책하기 좋은 날씨입니다"}
 
 TOOL_DEFINITIONS = [
+    {"name": "care_guide", "description": "첫 사용 목적·사용법·추천 답변·접근성·FAQ·개인정보 안내. action: start, examples, faq, accessibility, privacy", "inputSchema": {"type": "object", "properties": {"action": {"type": "string", "enum": ["start", "examples", "faq", "accessibility", "privacy"]}, "question": {"type": "string"}, "audience": {"type": "string", "enum": ["senior", "family", "helper"]}}}},
     {"name": "daily_checkin", "description": "매일 안부 확인. action: initiate(안부 메시지 생성), analyze(응답 감정 분석), no_response(무응답 확인)", "inputSchema": {"type": "object", "properties": {"user_id": {"type": "string"}, "action": {"type": "string", "enum": ["initiate", "analyze", "no_response"]}, "message": {"type": "string"}, "nickname": {"type": "string"}}, "required": ["user_id"]}},
     {"name": "emergency_detect", "description": "위험 신호 실시간 감지. action: detect(메시지 위험 판정), silence(무응답 경보)", "inputSchema": {"type": "object", "properties": {"user_id": {"type": "string"}, "message": {"type": "string"}, "action": {"type": "string", "enum": ["detect", "silence"]}}, "required": ["user_id"]}},
     {"name": "family_report", "description": "가족용 주간/일일 돌봄 리포트 생성. report_type: weekly(주간), daily(일일)", "inputSchema": {"type": "object", "properties": {"senior_user_id": {"type": "string"}, "report_type": {"type": "string", "enum": ["weekly", "daily"]}}, "required": ["senior_user_id"]}},
@@ -165,6 +166,8 @@ _TEXT_LIMITS = {
     "contact_roles": 120,
     "checkin_time": 5,
     "accessibility_needs": 300,
+    "question": 300,
+    "audience": 20,
 }
 
 
@@ -193,7 +196,14 @@ def execute_tool(name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
     if validation_error:
         return validation_error
 
-    if name == "daily_checkin":
+    if name == "care_guide":
+        from tools.care_guide import build_care_guide
+        return build_care_guide(
+            action=arguments.get("action", "start"),
+            question=arguments.get("question", ""),
+            audience=arguments.get("audience", "senior"),
+        )
+    elif name == "daily_checkin":
         from tools.daily_checkin import initiate_checkin, analyze_checkin_response, check_no_response
         action = arguments.get("action", "initiate")
         user_id, error = _require_arg(arguments, "user_id")
@@ -359,6 +369,7 @@ mcp = FastMCP(
     instructions=(
         "돌봄톡은 독거 어르신의 안부 확인, 건강 기록, 응급 신호 감지, "
         "추억 회상 대화와 가족 리포트를 제공하는 한국어 돌봄 MCP 서버입니다. "
+        "처음 방문했거나 사용법·도움말·FAQ를 물으면 care_guide를 먼저 호출하고, "
         "안부 계획을 요청하면 build_care_safety_plan으로 당사자 동의와 사람 확인 단계를 먼저 설계하세요. "
         "응급 판정은 보조 신호이며 실제 위급 상황에서는 즉시 119에 연락해야 합니다."
     ),
@@ -382,6 +393,25 @@ def _annotations(
         idempotentHint=idempotent,
         openWorldHint=open_world,
     )
+
+
+@mcp.tool(
+    title="Start CareTalk | 돌봄톡 시작 안내",
+    description=(
+        "사용자가 처음 방문했거나 목적·사용법·큰 글씨·추천 답변·FAQ·개인정보를 물을 때 먼저 호출합니다. "
+        "Explains one-tap senior use, accessibility, safety boundaries, and FAQs for CareTalk(돌봄톡)."
+    ),
+    annotations=_annotations(
+        "Start CareTalk | 돌봄톡 시작 안내", read_only=True, idempotent=True, open_world=False
+    ),
+)
+def care_guide(
+    action: Literal["start", "examples", "faq", "accessibility", "privacy"] = "start",
+    question: str = "",
+    audience: Literal["senior", "family", "helper"] = "senior",
+) -> Dict[str, Any]:
+    """어르신·가족·돌봄 담당자에게 첫 사용 흐름과 자주 묻는 질문을 안내합니다."""
+    return _tool_result("care_guide", locals())
 
 
 @mcp.tool(
@@ -575,7 +605,7 @@ def _server_info() -> Dict[str, Any]:
         mode = "rules_fallback"
     return {
         "server": "caretalk",
-        "version": "3.0.0",
+        "version": "3.1.0",
         "status": "ok",
         "mode": mode,
         "mock_mode": MOCK_MODE,

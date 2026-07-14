@@ -52,15 +52,15 @@ print("=" * 60)
 # === 1. initialize / tools/list ===
 print("\n[1] 서버 정보")
 from server import TOOL_DEFINITIONS
-test("Tool 개수 9개", len(TOOL_DEFINITIONS) == 9, f"got {len(TOOL_DEFINITIONS)}")
+test("Tool 개수 10개", len(TOOL_DEFINITIONS) == 10, f"got {len(TOOL_DEFINITIONS)}")
 tool_names = [t["name"] for t in TOOL_DEFINITIONS]
 test("필수 Tool 포함", all(n in tool_names for n in [
-    "daily_checkin", "emergency_detect", "family_report",
+    "care_guide", "daily_checkin", "emergency_detect", "family_report",
     "daily_care_widget", "health_log", "reminiscence_chat", "family_report_widget",
     "health_facility", "build_care_safety_plan"
 ]), f"got {tool_names}")
 registered_tools = asyncio.run(server.mcp.list_tools())
-test("공식 FastMCP Tool 9개 등록", len(registered_tools) == 9, str([t.name for t in registered_tools]))
+test("공식 FastMCP Tool 10개 등록", len(registered_tools) == 10, str([t.name for t in registered_tools]))
 for registered in registered_tools:
     annotations = registered.annotations
     test(f"{registered.name} annotations 있음", annotations is not None)
@@ -80,16 +80,32 @@ for registered in registered_tools:
         registered.description or "",
     )
 
-# === 2. daily_checkin ===
+# === 2. care_guide ===
+print("\n[2] care_guide")
+r = execute_tool("care_guide", {"action":"start","audience":"senior"})
+test("guide source=built_in_guide", r.get("source") == "built_in_guide", str(r)[:100])
+test("guide 원터치 답변 5개", len(r.get("quick_replies",[])) == 5, str(r)[:100])
+test("guide 자동신고 안 함 명시", r.get("accessibility",{}).get("automatic_emergency_dispatch") is False, str(r)[:140])
+test("guide Kakao message_json", len(r.get("message_json",{}).get("template",{}).get("quickReplies",[])) == 5, str(r)[:100])
+
+r = execute_tool("care_guide", {"action":"faq","question":"119에 자동 신고하나요?"})
+test("guide 질문별 FAQ", bool(r.get("kakao_cards")) and "자동" in r["kakao_cards"][0].get("description", ""), str(r)[:160])
+
+r = execute_tool("care_guide", {"action":"accessibility"})
+test("guide 접근성 안내", r.get("accessibility",{}).get("large_text_recommended") is True, str(r)[:120])
+
+# === 3. daily_checkin ===
 print("\n[2] daily_checkin")
 r = execute_tool("daily_checkin", {"user_id":"senior_001","action":"initiate","nickname":"순자"})
 test("initiate status=initiated", r.get("status") == "initiated", str(r)[:100])
 test("initiate greeting 있음", bool(r.get("greeting")), str(r)[:100])
-test("initiate quick_replies 3개", len(r.get("quick_replies",[])) == 3, str(r)[:100])
+test("initiate 원터치 quick_replies 5개", len(r.get("quick_replies",[])) == 5, str(r)[:100])
+test("initiate 도움 요청 버튼", "도움이 필요해요" in r.get("quick_replies",[]), str(r)[:140])
 
 r = execute_tool("daily_checkin", {"user_id":"senior_001","action":"analyze","message":"오늘 기분이 좋아요! 산책도 했어요"})
 test("analyze(positive) sentiment=positive", r.get("sentiment") == "positive", str(r)[:100])
 test("analyze(positive) status=normal", r.get("status") == "normal", str(r)[:100])
+test("analyze(positive) 후속 버튼", len(r.get("quick_replies",[])) == 4 and "밥 먹었어요" in r.get("quick_replies",[]), str(r)[:140])
 from db.schema import get_checkin_stats
 stats = get_checkin_stats("senior_001", days=1, db_path=DB_PATH)
 test("analyze 후 응답률 100%", stats.get("response_rate") == 100.0, str(stats)[:100])
@@ -97,9 +113,19 @@ test("analyze 후 응답률 100%", stats.get("response_rate") == 100.0, str(stat
 r = execute_tool("daily_checkin", {"user_id":"senior_001","action":"analyze","message":"무릎이 너무 아파요. 어지러워서 쓰러질 것 같아요"})
 test("analyze(danger) sentiment=negative", r.get("sentiment") == "negative", str(r)[:100])
 test("analyze(danger) 위험키워드 감지", len(r.get("danger_keywords_detected",[])) > 0, str(r)[:100])
+test("analyze(danger) 직접 119 안내", "119" in r.get("response_text","") and "자동" in r.get("response_text",""), str(r)[:180])
 
 r = execute_tool("daily_checkin", {"user_id":"senior_001","action":"no_response"})
 test("no_response 응답 있음", "status" in r, str(r)[:100])
+
+r = execute_tool("daily_checkin", {"user_id":"senior_001","action":"analyze","message":"약 먹었어요"})
+test("원터치 복약 완료 → positive", r.get("sentiment") == "positive", str(r)[:120])
+r = execute_tool("daily_checkin", {"user_id":"senior_001","action":"analyze","message":"도움이 필요해요"})
+test("원터치 도움 요청 → concern", r.get("status") == "concern", str(r)[:120])
+r = execute_tool("daily_checkin", {"user_id":"senior_001","action":"analyze","message":"약을 못 먹었어요"})
+test("복약 미완료 부정어 → negative", r.get("sentiment") == "negative", str(r)[:120])
+r = execute_tool("daily_checkin", {"user_id":"senior_001","action":"analyze","message":"잠이 안 와요"})
+test("수면 불편 버튼 → negative", r.get("sentiment") == "negative", str(r)[:120])
 
 # === 3. emergency_detect ===
 print("\n[3] emergency_detect")
@@ -138,7 +164,8 @@ r = execute_tool("daily_care_widget", {"user_id":"senior_001","nickname":"순자
 outputs = r.get("template",{}).get("outputs",[])
 test("Widget A version=2.0", r.get("version") == "2.0", str(r)[:100])
 test("Widget A simpleText 있음", len(outputs) > 0 and "simpleText" in outputs[0], str(r)[:100])
-test("Widget A quickReplies 3개", len(r.get("template",{}).get("quickReplies",[])) == 3, str(r)[:100])
+test("Widget A quickReplies 5개", len(r.get("template",{}).get("quickReplies",[])) == 5, str(r)[:100])
+test("Widget A 도움 요청 버튼", any(q.get("label") == "도움이 필요해요" for q in r.get("template",{}).get("quickReplies",[])), str(r)[:140])
 
 # === 6. health_log ===
 print("\n[6] health_log")

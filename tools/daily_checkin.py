@@ -42,7 +42,8 @@ POSITIVE_KEYWORDS = [
     "좋아요", "좋아", "좋다", "기분 좋아", "행복", "즐거워", "신나",
     "괜찮아", "잘 잤어", "상쾌", "활기차", "힘나", "감사", "고마워",
     "좋은", "멋진", "따뜻", "편안", "만족", "웃음", "기쁘", "잘 지내",
-    "건강해", "튼튼", "좋은 아침", "잘 먹었", "맛있", "산책", "운동"
+    "건강해", "튼튼", "좋은 아침", "잘 먹었", "맛있", "산책", "운동",
+    "밥 먹었", "아침 먹었", "저녁 먹었", "약 먹었", "잘 잤"
 ]
 
 NEGATIVE_KEYWORDS = [
@@ -50,7 +51,8 @@ NEGATIVE_KEYWORDS = [
     "슬퍼", "외로워", "외롭", "불안", "걱정", "무서워", "화나",
     "짜증", "속상", "눈물", "잠 못", "불면", "식욕", "입맛",
     "기운", "의욕", "괴롭", "답답", "숨이", "어지러", "쓰러",
-    "다쳤", "피가", "가슴", "심장", "호흡", "119", "구급차"
+    "다쳤", "피가", "가슴", "심장", "호흡", "119", "구급차",
+    "도움이 필요", "도와줘", "잠이 안", "혼자라서"
 ]
 
 NEUTRAL_KEYWORDS = [
@@ -82,6 +84,7 @@ DANGER_KEYWORDS = [
 NEGATED_POSITIVE_PATTERNS = [
     r"안\s*좋", r"좋지\s*(?:가\s*)?않", r"안\s*괜찮", r"괜찮지\s*않",
     r"못\s*지내", r"잘\s*못\s*잤", r"맛이?\s*없", r"재미\s*없", r"편하지\s*않",
+    r"(?:밥|아침|저녁|약)(?:을|은|도)?\s*못\s*먹",
 ]
 
 # ============================================================
@@ -141,14 +144,19 @@ def initiate_checkin(
 
     # 인사말 생성 (시간대별 다른 인사)
     hour = now.hour
+    display_name = nickname if nickname.endswith("님") else f"{nickname}님"
     if 5 <= hour < 12:
-        greeting = f"좋은 아침이에요, {nickname}님!"
+        greeting = f"좋은 아침이에요, {display_name}."
+        quick_replies = ["잘 잤어요", "아침 먹었어요", "약 먹었어요", "조금 아파요", "도움이 필요해요"]
     elif 12 <= hour < 17:
-        greeting = f"안녕하세요, {nickname}님! 좋은 오후 보내고 계신가요?"
+        greeting = f"안녕하세요, {display_name}. 좋은 오후예요."
+        quick_replies = ["오늘은 괜찮아요", "밥 먹었어요", "산책했어요", "조금 아파요", "도움이 필요해요"]
     elif 17 <= hour < 21:
-        greeting = f"좋은 저녁이에요, {nickname}님!"
+        greeting = f"좋은 저녁이에요, {display_name}."
+        quick_replies = ["오늘은 괜찮아요", "저녁 먹었어요", "약 먹었어요", "조금 외로워요", "도움이 필요해요"]
     else:
-        greeting = f"안녕하세요, {nickname}님! 편안한 밤 보내세요~"
+        greeting = f"편안한 밤이에요, {display_name}."
+        quick_replies = ["괜찮아요", "잠이 안 와요", "조금 아파요", "무서워요", "도움이 필요해요"]
 
     # 카카오 챗봇 스킬 응답 JSON v2.0 형식
     message_json = {
@@ -157,32 +165,16 @@ def initiate_checkin(
             "outputs": [
                 {
                     "simpleText": {
-                        "text": f"{greeting} 오늘 기분은 어떠세요? 😊"
+                        "text": f"{greeting}\n\n지금 어떠세요?\n아래에서 하나만 눌러 주세요."
                     }
                 }
             ],
             "quickReplies": [
-                {
-                    "label": "좋아요",
-                    "action": "message",
-                    "messageText": "좋아요"
-                },
-                {
-                    "label": "그저 그래요",
-                    "action": "message",
-                    "messageText": "그저 그래요"
-                },
-                {
-                    "label": "아파요",
-                    "action": "message",
-                    "messageText": "아파요"
-                }
+                {"label": reply, "action": "message", "messageText": reply}
+                for reply in quick_replies
             ]
         }
     }
-
-    # quickReplies 레이블만 추출한 리스트 (간편 접근용)
-    quick_replies = ["좋아요", "그저 그래요", "아파요"]
 
     # DB에 체크인 기록 저장
     conn = sqlite3.connect(db_path, timeout=1.0)
@@ -285,6 +277,52 @@ def _rule_based_sentiment(message: str) -> Tuple[str, List[str]]:
         sentiment = "neutral"
 
     return sentiment, health_found
+
+
+def _follow_up_message(
+    sentiment: str,
+    health_keywords: List[str],
+    danger_detected: List[str],
+) -> Tuple[str, List[str]]:
+    """분석 결과에 맞는 짧은 안내와 원터치 후속 답변을 만든다."""
+    if danger_detected:
+        return (
+            "위험할 수 있는 말이 보여요.\n\n지금 많이 아프거나 숨쉬기 어렵다면 119에 직접 전화해 주세요.\n돌봄톡이 자동으로 신고하지는 않아요.",
+            ["119에 전화할게요", "가까운 사람에게 전화", "지금 혼자예요", "잘못 눌렀어요"],
+        )
+    if sentiment == "negative" and health_keywords:
+        body = ", ".join(health_keywords[:3])
+        return (
+            f"{body} 때문에 불편하시군요.\n\n조금 쉬고, 계속 아프면 가족이나 의료진에게 알려 주세요.",
+            ["어디가 아픈지 말할게요", "가족에게 전화할게요", "조금 쉬어볼게요", "보건소 찾아줘"],
+        )
+    if sentiment == "negative":
+        return (
+            "마음이 힘드시군요.\n\n혼자 견디지 않아도 돼요. 지금 원하는 것을 하나 눌러 주세요.",
+            ["가족과 통화하고 싶어요", "추억 이야기할래요", "조금 쉬고 싶어요", "도움이 필요해요"],
+        )
+    if sentiment == "positive":
+        return (
+            "잘 지내고 계셔서 다행이에요.\n오늘 한 일을 하나 더 남겨 볼까요?",
+            ["밥 먹었어요", "약 먹었어요", "산책했어요", "오늘 기록 보여줘"],
+        )
+    return (
+        "알려주셔서 고마워요.\n지금 상태와 가까운 답을 하나 더 눌러 주세요.",
+        ["괜찮아요", "조금 피곤해요", "밥 먹었어요", "도움이 필요해요"],
+    )
+
+
+def _follow_up_json(text: str, replies: List[str]) -> Dict[str, Any]:
+    return {
+        "version": "2.0",
+        "template": {
+            "outputs": [{"simpleText": {"text": text}}],
+            "quickReplies": [
+                {"label": reply, "action": "message", "messageText": reply}
+                for reply in replies
+            ],
+        },
+    }
 
 
 def _gpt_analyze_sentiment(message: str) -> Tuple[str, List[str], str, bool]:
@@ -504,12 +542,19 @@ def analyze_checkin_response(
     conn.commit()
     conn.close()
 
+    response_text, quick_replies = _follow_up_message(
+        sentiment, health_keywords, danger_detected
+    )
+
     return {
         "status": status,
         "sentiment": sentiment,
         "health_keywords": health_keywords,
         "follow_up_action": follow_up_action,
         "danger_keywords_detected": danger_detected,
+        "response_text": response_text,
+        "quick_replies": quick_replies,
+        "message_json": _follow_up_json(response_text, quick_replies),
         "mock_mode": not used_llm,
         "analysis_source": "openai" if used_llm else "rules"
     }

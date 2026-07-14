@@ -39,7 +39,7 @@
   .avatar { width: 36px; height: 36px; border-radius: 12px; background: #ffe14d;
     display: flex; align-items: center; justify-content: center; font-size: 18px; flex-shrink: 0; }
   .bubble {
-    max-width: 230px; padding: 10px 12px; border-radius: 14px; font-size: 14px; line-height: 1.5;
+    max-width: 250px; padding: 13px 14px; border-radius: 10px; font-size: 18px; line-height: 1.6;
     white-space: pre-wrap; word-break: break-word;
   }
   .bot .bubble { background: #fff; border-top-left-radius: 4px; }
@@ -48,8 +48,8 @@
 
   .quick { display: flex; flex-wrap: wrap; gap: 6px; margin: 2px 0 4px 42px; }
   .quick button {
-    background: #fff; border: 1px solid #c9d4dd; color: #2b4a63; border-radius: 16px;
-    padding: 6px 12px; font-size: 12.5px; cursor: pointer; font-weight: 600;
+    width: 100%; min-height: 48px; background: #fff; border: 1px solid #86a89f; color: #155f50; border-radius: 8px;
+    padding: 10px 12px; font-size: 16px; cursor: pointer; font-weight: 700;
   }
   .quick button:hover { background: #eaf2f8; }
 
@@ -96,6 +96,8 @@
 
   <div style="height:14px"></div>
 
+  <button class="step" onclick="step0()">
+    <b>처음 안내와 큰 선택 버튼</b><span>care_guide · start</span></button>
   <button class="step" onclick="step1()">
     <b>① 아침 안부 확인</b><span>daily_checkin · initiate → Widget A</span></button>
   <button class="step" onclick="step2()">
@@ -207,6 +209,11 @@ function renderTemplate(tpl) {
 }
 
 // ── 시나리오 ──
+async function step0(){
+  const r=await callTool("care_guide",{action:"start",audience:"senior"});
+  botName("돌봄톡 · 처음 안내");
+  if(r.message_json) renderTemplate(r.message_json);
+}
 async function step1(){
   const r=await callTool("daily_checkin",{user_id:"demo",action:"initiate",nickname:"순자"});
   botName("돌봄톡");
