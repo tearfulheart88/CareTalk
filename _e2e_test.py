@@ -6,7 +6,7 @@
 DB 충돌을 피하기 위해 임시 DB 경로를 사용한다.
 """
 import asyncio, os, sys, json, tempfile, shutil, sqlite3
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 # Windows 기본 콘솔(cp949)에서도 이모지/한글 테스트 로그가 깨지지 않게 한다.
@@ -61,6 +61,9 @@ test("필수 Tool 포함", all(n in tool_names for n in [
     "daily_care_widget", "health_log", "reminiscence_chat", "family_report_widget",
     "health_facility", "build_care_safety_plan"
 ]), f"got {tool_names}")
+routine_schema = next(item for item in TOOL_DEFINITIONS if item["name"] == "care_routine")["inputSchema"]
+routine_actions = routine_schema["properties"]["action"]["enum"]
+test("care_routine 기기 연결 action 공개", all(action in routine_actions for action in ["create_device_pairing", "list_devices", "revoke_device"]), str(routine_actions))
 registered_tools = asyncio.run(server.mcp.list_tools())
 test("공식 FastMCP Tool 12개 등록", len(registered_tools) == 12, str([t.name for t in registered_tools]))
 for registered in registered_tools:
@@ -194,6 +197,11 @@ r = execute_tool("care_routine", {
     "senior_user_id":circle_senior, "event_type":"screen_unlock",
 })
 test("가족의 휴대폰 활동 위조 차단", "error" in r, str(r)[:120])
+r = execute_tool("care_routine", {
+    "action":"record_activity", "requester_user_id":circle_senior,
+    "senior_user_id":circle_senior, "event_type":"screen_unlock", "source":"phone",
+})
+test("MCP에서 인증 없는 실제 기기 신호 위조 차단", "error" in r and "/device/activity" in r.get("error", ""), str(r)[:160])
 
 past_activity = (demo_now - timedelta(hours=9)).isoformat()
 screen = execute_tool("care_routine", {
@@ -299,6 +307,156 @@ family_schedule_update = execute_tool("care_routine", {
 family_settings = family_schedule_update.get("settings", {})
 test("가족 일정 권한은 활동·웨어러블 동의 설정을 바꾸지 않음", family_schedule_update.get("status") == "configured" and family_settings.get("inactivity_hours") == 8 and family_settings.get("phone_activity_enabled") is True and family_settings.get("wearable_enabled") is False, str(family_schedule_update)[:220])
 
+print("\n[2-2] 인증된 휴대폰·웨어러블 연결")
+family_pair = execute_tool("care_routine", {
+    "action":"create_device_pairing", "requester_user_id":circle_family,
+    "senior_user_id":circle_senior, "device_type":"phone", "senior_consented":True,
+})
+test("가족 계정의 기기 연결 코드 생성 차단", "error" in family_pair, str(family_pair)[:160])
+no_consent_pair = execute_tool("care_routine", {
+    "action":"create_device_pairing", "requester_user_id":circle_senior,
+    "senior_user_id":circle_senior, "device_type":"phone", "senior_consented":False,
+})
+test("기기 연결도 어르신 명시적 동의 필수", "error" in no_consent_pair, str(no_consent_pair)[:160])
+wearable_pair = execute_tool("care_routine", {
+    "action":"create_device_pairing", "requester_user_id":circle_senior,
+    "senior_user_id":circle_senior, "device_type":"wearable", "senior_consented":True,
+})
+test("꺼진 웨어러블의 연결 코드 생성 차단", "error" in wearable_pair, str(wearable_pair)[:160])
+
+phone_pair = execute_tool("care_routine", {
+    "action":"create_device_pairing", "requester_user_id":circle_senior,
+    "senior_user_id":circle_senior, "device_type":"phone", "device_label":"순자님 휴대폰",
+    "pairing_minutes":10, "senior_consented":True,
+})
+pairing_code = phone_pair.get("pairing_code", "")
+test("일회용 휴대폰 연결 코드 생성", phone_pair.get("status") == "pairing_created" and len(pairing_code) == 12, str(phone_pair)[:180])
+conn = sqlite3.connect(DB_PATH)
+pairing_hash = conn.execute(
+    "SELECT code_hash FROM care_device_pairings WHERE senior_user_id = ? ORDER BY created_at DESC LIMIT 1",
+    (circle_senior,),
+).fetchone()[0]
+conn.close()
+test("기기 연결 코드도 해시만 저장", pairing_code not in pairing_hash and len(pairing_hash) == 64, pairing_hash)
+
+from services.device_bridge import (
+    DeviceBridgeError,
+    exchange_device_pairing,
+    ingest_device_activity,
+    ingest_device_health,
+)
+linked_device = exchange_device_pairing(pairing_code, db_path=DB_PATH)
+device_token = linked_device.get("device_token", "")
+test("연결 코드로 기기 토큰 1회 발급", linked_device.get("status") == "paired" and device_token.startswith("ctd_") and linked_device.get("token_shown_once") is True, str(linked_device)[:180])
+conn = sqlite3.connect(DB_PATH)
+stored_device_hash = conn.execute(
+    "SELECT token_hash FROM care_devices WHERE device_id = ?", (linked_device.get("device_id"),)
+).fetchone()[0]
+conn.close()
+test("기기 토큰 평문 미저장", device_token not in stored_device_hash and len(stored_device_hash) == 64, stored_device_hash)
+try:
+    exchange_device_pairing(pairing_code, db_path=DB_PATH)
+    pairing_reused = True
+except DeviceBridgeError:
+    pairing_reused = False
+test("기기 연결 코드 재사용 차단", pairing_reused is False)
+
+device_activity = ingest_device_activity(
+    device_token, "screen_unlock", event_id="device-activity-1", db_path=DB_PATH
+)
+duplicate_device_activity = ingest_device_activity(
+    device_token, "screen_unlock", event_id="device-activity-1", db_path=DB_PATH
+)
+test("인증된 기기의 최소 활동 신호 수취", device_activity.get("status") == "recorded" and device_activity.get("authenticated_device") is True, str(device_activity)[:180])
+test("기기 활동 이벤트 중복 방지", duplicate_device_activity.get("status") == "duplicate_ignored", str(duplicate_device_activity)[:140])
+test("기기 활동에도 위치·화면 내용 미수집", device_activity.get("exact_location_collected") is False and device_activity.get("screen_content_collected") is False, str(device_activity)[:160])
+try:
+    ingest_device_activity("ctd_" + "x" * 44, "screen_unlock", event_id="invalid", db_path=DB_PATH)
+    invalid_token_rejected = False
+except DeviceBridgeError as exc:
+    invalid_token_rejected = exc.status_code == 401
+test("잘못된 기기 토큰 차단", invalid_token_rejected)
+
+device_health = ingest_device_health(
+    device_token, "device-health-1", "heart_rate", 72, db_path=DB_PATH
+)
+duplicate_device_health = ingest_device_health(
+    device_token, "device-health-1", "heart_rate", 72, db_path=DB_PATH
+)
+test("인증된 기기의 건강 수치 기록", device_health.get("status") == "normal" and device_health.get("source") == "device", str(device_health)[:180])
+test("기기 건강 이벤트 중복 기록 방지", duplicate_device_health.get("status") == "duplicate_ignored", str(duplicate_device_health)[:140])
+
+# 건강 로그 저장 직후 프로세스가 종료된 상황도 같은 event_id로 안전하게 복구한다.
+from tools.health_log import log_health_data
+recovery_event_id = f"{linked_device.get('device_id')}:device-health-recovery"
+stale_received_at = (datetime.now(timezone.utc) - timedelta(minutes=6)).isoformat().replace("+00:00", "Z")
+conn = sqlite3.connect(DB_PATH)
+conn.execute(
+    """INSERT INTO device_health_events
+       (event_id, device_id, senior_user_id, data_type, value, occurred_at, received_at)
+       VALUES (?, ?, ?, 'heart_rate', 73, ?, ?)""",
+    (
+        recovery_event_id,
+        linked_device.get("device_id"),
+        circle_senior,
+        datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        stale_received_at,
+    ),
+)
+conn.commit()
+conn.close()
+precrash_health = log_health_data(
+    circle_senior,
+    "heart_rate",
+    73,
+    db_path=DB_PATH,
+    source="device",
+    source_event_id=recovery_event_id,
+)
+conn = sqlite3.connect(DB_PATH)
+health_count_before_recovery = conn.execute(
+    "SELECT COUNT(*) FROM health_logs WHERE source_event_id = ?", (recovery_event_id,)
+).fetchone()[0]
+conn.close()
+recovered_health = ingest_device_health(
+    device_token, "device-health-recovery", "heart_rate", 73, db_path=DB_PATH
+)
+conn = sqlite3.connect(DB_PATH)
+recovered_row = conn.execute(
+    """SELECT health_log_id FROM device_health_events WHERE event_id = ?""",
+    (recovery_event_id,),
+).fetchone()
+health_count_after_recovery = conn.execute(
+    "SELECT COUNT(*) FROM health_logs WHERE source_event_id = ?", (recovery_event_id,)
+).fetchone()[0]
+conn.close()
+test(
+    "중단된 기기 건강 기록을 중복 없이 복구",
+    health_count_before_recovery == 1
+    and health_count_after_recovery == 1
+    and recovered_health.get("log_id") == precrash_health.get("log_id")
+    and recovered_row
+    and recovered_row[0] == precrash_health.get("log_id"),
+    str(recovered_health)[:180],
+)
+try:
+    ingest_device_health(device_token, "device-health-nan", "heart_rate", float("nan"), db_path=DB_PATH)
+    invalid_device_number_rejected = False
+except DeviceBridgeError:
+    invalid_device_number_rejected = True
+test("기기 건강 수치 NaN 차단", invalid_device_number_rejected)
+
+device_list = execute_tool("care_routine", {
+    "action":"list_devices", "requester_user_id":circle_senior,
+    "senior_user_id":circle_senior,
+})
+test("어르신이 연결 기기 목록 조회", device_list.get("active_count") == 1 and device_list.get("tokens_returned") is False, str(device_list)[:180])
+family_device_list = execute_tool("care_routine", {
+    "action":"list_devices", "requester_user_id":circle_family,
+    "senior_user_id":circle_senior,
+})
+test("가족의 기기 목록 조회 차단", "error" in family_device_list, str(family_device_list)[:140])
+
 r = execute_tool("care_routine", {
     "action":"pause", "requester_user_id":circle_family,
     "senior_user_id":circle_senior,
@@ -309,6 +467,13 @@ r = execute_tool("care_routine", {
     "senior_user_id":circle_senior,
 })
 test("어르신이 예약·활동 확인 즉시 중지", r.get("status") == "paused" and r.get("senior_consented") is False and r.get("phone_activity_enabled") is False, str(r)[:180])
+test("돌봄 중지 시 연결 기기도 즉시 해제", r.get("active_devices_revoked") == 1, str(r)[:180])
+try:
+    ingest_device_activity(device_token, "screen_unlock", event_id="after-pause", db_path=DB_PATH)
+    paused_device_rejected = False
+except DeviceBridgeError as exc:
+    paused_device_rejected = exc.status_code == 401
+test("중지 후 기존 기기 토큰 차단", paused_device_rejected)
 paused_status = execute_tool("care_routine", {
     "action":"status", "requester_user_id":circle_senior,
     "senior_user_id":circle_senior,
@@ -738,7 +903,147 @@ finally:
             os.environ[key] = value
     set_mock_mode(True)
 
-# === 19. 정리 ===
+# === 19. 영구 대기열·서명 전달 ===
+print("\n[19] 영구 대기열·서명 전달")
+from tools.care_routine import claim_pending_notifications, mark_notification_delivery
+
+delivery_now = datetime.now(timezone.utc).replace(microsecond=0)
+delivery_iso = delivery_now.isoformat().replace("+00:00", "Z")
+conn = sqlite3.connect(DB_PATH)
+conn.execute(
+    """INSERT INTO care_outbox
+       (senior_user_id, recipient_user_id, event_type, severity, payload_json,
+        due_at, status, dedupe_key, created_at, next_attempt_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?)""",
+    ("queue-senior", "opaque-family", "family_digest", "info", '{"text":"안부 요약"}',
+     delivery_iso, "queue-dedupe-1", delivery_iso, delivery_iso, delivery_iso),
+)
+conn.commit()
+conn.close()
+
+first_claim = claim_pending_notifications(now=delivery_now, db_path=DB_PATH)
+second_claim = claim_pending_notifications(now=delivery_now, db_path=DB_PATH)
+test("대기 알림을 한 worker만 원자적으로 점유", len(first_claim) == 1 and len(second_claim) == 0 and first_claim[0].get("status") == "processing", str(first_claim)[:180])
+test("잘못된 lease 토큰으로 완료 처리 차단", mark_notification_delivery(first_claim[0]["id"], "sent", claim_token="wrong", now=delivery_now, db_path=DB_PATH) is False)
+retried = mark_notification_delivery(
+    first_claim[0]["id"], "failed", claim_token=first_claim[0]["claim_token"],
+    error="temporary test failure", base_delay_seconds=5, now=delivery_now, db_path=DB_PATH,
+)
+test("전달 실패를 재시도 대기 상태로 복구", retried is True, str(first_claim[0])[:160])
+test("백오프 전 재점유 차단", len(claim_pending_notifications(now=delivery_now + timedelta(seconds=4), db_path=DB_PATH)) == 0)
+retry_claim = claim_pending_notifications(now=delivery_now + timedelta(seconds=5), db_path=DB_PATH)
+test("백오프 후 동일 알림 재점유", len(retry_claim) == 1 and retry_claim[0].get("attempt_count") == 2, str(retry_claim)[:180])
+sent = mark_notification_delivery(
+    retry_claim[0]["id"], "sent", claim_token=retry_claim[0]["claim_token"],
+    provider_message_id="provider-test-1", now=delivery_now + timedelta(seconds=5), db_path=DB_PATH,
+)
+conn = sqlite3.connect(DB_PATH)
+sent_row = conn.execute(
+    "SELECT status, provider_message_id FROM care_outbox WHERE id = ?", (retry_claim[0]["id"],)
+).fetchone()
+conn.close()
+test("성공 전달과 공급사 메시지 ID 감사 기록", sent is True and sent_row == ("sent", "provider-test-1"), str(sent_row))
+
+stale_time = (delivery_now - timedelta(minutes=5)).isoformat().replace("+00:00", "Z")
+conn = sqlite3.connect(DB_PATH)
+conn.execute(
+    """INSERT INTO care_outbox
+       (senior_user_id, recipient_user_id, event_type, severity, payload_json,
+        due_at, status, dedupe_key, created_at, next_attempt_at, claimed_at,
+        claim_token, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, 'processing', ?, ?, ?, ?, ?, ?)""",
+    ("queue-senior", "opaque-family", "family_digest", "info", '{}', delivery_iso,
+     "queue-stale-lease", delivery_iso, delivery_iso, stale_time, "stale-token", stale_time),
+)
+conn.commit()
+conn.close()
+recovered_claim = claim_pending_notifications(now=delivery_now + timedelta(seconds=10), lease_seconds=30, db_path=DB_PATH)
+test("중단된 worker의 만료 lease 자동 회수", len(recovered_claim) == 1 and recovered_claim[0].get("dedupe_key") == "queue-stale-lease", str(recovered_claim)[:180])
+mark_notification_delivery(
+    recovered_claim[0]["id"], "sent", claim_token=recovered_claim[0]["claim_token"],
+    now=delivery_now + timedelta(seconds=10), db_path=DB_PATH,
+)
+
+conn = sqlite3.connect(DB_PATH)
+conn.execute(
+    """INSERT INTO care_outbox
+       (senior_user_id, recipient_user_id, event_type, severity, payload_json,
+        due_at, status, dedupe_key, created_at, next_attempt_at, claimed_at,
+        claim_token, attempt_count, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, 'processing', ?, ?, ?, ?, ?, 5, ?)""",
+    ("queue-senior", "opaque-family", "family_digest", "info", '{}', delivery_iso,
+     "queue-exhausted-lease", delivery_iso, delivery_iso, stale_time, "exhausted-token", stale_time),
+)
+conn.commit()
+conn.close()
+exhausted_claim = claim_pending_notifications(
+    now=delivery_now + timedelta(seconds=20), lease_seconds=30, max_attempts=5, db_path=DB_PATH
+)
+conn = sqlite3.connect(DB_PATH)
+exhausted_status = conn.execute(
+    "SELECT status FROM care_outbox WHERE dedupe_key = 'queue-exhausted-lease'"
+).fetchone()[0]
+conn.close()
+test("재시도 한도를 넘긴 만료 lease 종료", not exhausted_claim and exhausted_status == "failed", exhausted_status)
+
+import hashlib, hmac
+import services.notification_delivery as delivery_module
+delivery_keys = (
+    "CARETALK_DELIVERY_MODE", "CARETALK_DELIVERY_WEBHOOK_URL",
+    "CARETALK_DELIVERY_WEBHOOK_SECRET", "CARETALK_ALLOW_INSECURE_LOCAL_WEBHOOK",
+)
+delivery_original = {key: os.environ.get(key) for key in delivery_keys}
+original_post = delivery_module.requests.post
+captured_delivery = {}
+
+class _DeliveryResponse:
+    status_code = 202
+    def json(self):
+        return {"provider_message_id": "signed-provider-1"}
+
+def _fake_delivery_post(url, data, headers, timeout, allow_redirects):
+    captured_delivery.update({
+        "url": url, "data": data, "headers": headers,
+        "timeout": timeout, "allow_redirects": allow_redirects,
+    })
+    return _DeliveryResponse()
+
+try:
+    os.environ["CARETALK_DELIVERY_MODE"] = "webhook"
+    os.environ["CARETALK_DELIVERY_WEBHOOK_URL"] = "http://127.0.0.1:9876/caretalk"
+    os.environ["CARETALK_DELIVERY_WEBHOOK_SECRET"] = "s" * 32
+    os.environ["CARETALK_ALLOW_INSECURE_LOCAL_WEBHOOK"] = "true"
+    delivery_module.requests.post = _fake_delivery_post
+    delivery_result = delivery_module.WebhookDeliveryClient().send(retry_claim[0])
+    expected_signature = "sha256=" + hmac.new(
+        ("s" * 32).encode("utf-8"), captured_delivery["data"], hashlib.sha256
+    ).hexdigest()
+    delivery_body = json.loads(captured_delivery["data"])
+    test("전달 웹훅 HMAC-SHA256 서명 검증", captured_delivery["headers"].get("X-CareTalk-Signature") == expected_signature)
+    test("전달 웹훅 리다이렉트 차단", captured_delivery.get("allow_redirects") is False)
+    test("전달에는 불투명 계정 ID만 포함", delivery_body.get("recipient",{}).get("identifier_type") == "opaque_linked_account" and delivery_body.get("privacy",{}).get("phone_number_included") is False, str(delivery_body)[:180])
+    test("공급사 전달 ID 수취", delivery_result.provider_message_id == "signed-provider-1", str(delivery_result))
+finally:
+    delivery_module.requests.post = original_post
+    for key, value in delivery_original.items():
+        if value is None:
+            os.environ.pop(key, None)
+        else:
+            os.environ[key] = value
+
+from services.alimtalk import send_alimtalk
+try:
+    send_alimtalk("key", "sender", "01000000000", "template", "message", api_url="https://api.kakao.com/v2/api/talk/message/send")
+    wrong_kakao_endpoint_rejected = False
+except RuntimeError as exc:
+    wrong_kakao_endpoint_rejected = "아닙니다" in str(exc)
+test("카카오톡 메시지 API를 알림톡으로 오용 차단", wrong_kakao_endpoint_rejected)
+
+server_status = server._server_info()
+test("상태 API에 worker·대기열 공개", "worker" in server_status and "outbox" in server_status["worker"], str(server_status)[:180])
+test("상태 API에 기기 개인정보 경계 공개", server_status.get("device_bridge",{}).get("exact_location_collected") is False and server_status.get("device_bridge",{}).get("token_storage") == "sha256_hash_only", str(server_status)[:180])
+
+# === 20. 정리 ===
 print("\n" + "=" * 60)
 print(f"결과: ✅ {passed}개 통과 / ❌ {failed}개 실패")
 print("=" * 60)

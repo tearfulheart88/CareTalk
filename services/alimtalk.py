@@ -1,28 +1,25 @@
 """
-알림톡(AlimTalk) 발송 서비스 (스켈레톤)
-=========================================
-돌봄톡(CareTalk) MCP 서버의 카카오 알림톡 연동 모듈입니다.
-위험 감지(emergency_detect) 시 가족·복지사에게
-긴급 알림을 발송하는 기능을 제공합니다.
+알림톡(AlimTalk) 공급사 어댑터 예시
+===================================
+알림톡은 카카오 디벨로퍼스의 '카카오톡 메시지 API'가 아니라 카카오
+비즈니스 및 계약한 비즈메시지 공급사를 통해 연동해야 합니다. 운영 서버는
+services.notification_delivery의 서명 웹훅을 사용하며, 이 파일은 공급사별
+요청 규격을 붙일 때만 사용하는 하위 호환용 예시입니다.
 
-카카오 비즈메시지 API를 통해 알림톡을 발송하며,
-실제 API 키 없이도 코드 구조를 완성하여
-MVP 개발 시 즉시 연동 가능하도록 설계되었습니다.
-
-기획서 참고: AGENTIC_PLAYER10_돌봄톡_v2_기획서.md 섹션 1.2
-공식 문서: https://kakaobusiness.gitbook.io/main/tool/chatbot/skill_guide/answer_json_format
+카카오 공식 구분 안내: https://developers.kakao.com/docs/ko/kakaotalk-message/faq
 
 알림톡 주요 특징:
-    - 카카오톡 비즈니스 채널 등록 필요
-    - 사전 승인된 템플릿 기반 발송 (정보성 메시지)
-    - 발송 건당 과금: 약 15~20원/건
-    - 야간(20시~08시) 발송 제한 (친구톡은 가능)
+    - 카카오톡 비즈니스 채널과 공급사 계약 필요
+    - 사전 승인된 정보성 템플릿 기반 발송
+    - 비용·발송 정책·요청 형식은 계약 공급사 문서를 따름
 """
 
 from __future__ import annotations
 
 import logging
+import os
 from typing import Any, Dict, List, Optional
+from urllib.parse import urlparse
 
 # 실제 환경에서는 httpx 또는 requests 라이브러리 사용
 try:
@@ -64,10 +61,9 @@ DANGER_KEYWORD_DESCRIPTIONS: Dict[str, str] = {
     "설사": "설사 증상",
 }
 
-# 알림톡 발송 제한 시간 (야간 20시~08시)
-# 야간에는 알림톡 대신 친구톡으로 발송하거나 다음날 오전 8시로 지연
-NIGHT_START_HOUR = 20  # 20시부터 야간
-NIGHT_END_HOUR = 8     # 08시까지 야간
+# 돌봄톡의 사용자 배려용 기본 조용한 시간. 법적·공급사 발송 제한을 뜻하지 않는다.
+NIGHT_START_HOUR = 20
+NIGHT_END_HOUR = 8
 
 
 # ──────────────────────────────────────────────────────────────
@@ -82,6 +78,7 @@ def send_alimtalk(
     message: str,
     title: Optional[str] = None,
     buttons: Optional[List[Dict[str, str]]] = None,
+    api_url: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     카카오 알림톡을 발송합니다.
@@ -105,11 +102,10 @@ def send_alimtalk(
             title="긴급 돌봄 알림",
         )
 
-    API 엔드포인트 (카카오 비즈메시지 v2):
-        POST https://api.kakao.com/v2/api/talk/message/send
-        Header:
-            Authorization: Bearer {API_KEY}
-            Content-Type: application/json
+    API 엔드포인트와 인증·페이로드는 계약한 공급사마다 다릅니다.
+    KAKAO_BIZ_API_URL 또는 api_url에 공급사 문서의 HTTPS 주소를 지정하세요.
+    카카오 디벨로퍼스의 /v2/api/talk/memo/* 또는 /v1/api/talk/friends/message/*
+    주소는 알림톡 엔드포인트가 아니므로 이 함수에서 거부합니다.
 
     Args:
         api_key: 카카오 비즈메시지 API 키 (비즈니스 채널에서 발급)
@@ -158,8 +154,13 @@ def send_alimtalk(
         "Content-Type": "application/json",
     }
 
-    # 카카오 비즈메시지 API 엔드포인트
-    api_url = "https://api.kakao.com/v2/api/talk/message/send"
+    # 계약한 비즈메시지 공급사의 주소만 운영자가 명시적으로 주입한다.
+    resolved_api_url = (api_url or os.environ.get("KAKAO_BIZ_API_URL", "")).strip()
+    parsed_url = urlparse(resolved_api_url)
+    if parsed_url.scheme != "https" or not parsed_url.hostname:
+        raise RuntimeError("KAKAO_BIZ_API_URL에 계약한 알림톡 공급사의 HTTPS 주소가 필요합니다.")
+    if parsed_url.hostname == "api.kakao.com" and "/api/talk/" in parsed_url.path:
+        raise RuntimeError("카카오톡 메시지 API는 알림톡 발송 API가 아닙니다.")
 
     logger.info(
         f"알림톡 발송 요청: template_code={template_code}, "
@@ -167,7 +168,7 @@ def send_alimtalk(
     )
 
     try:
-        response = requests.post(api_url, json=payload, headers=headers, timeout=10)
+        response = requests.post(resolved_api_url, json=payload, headers=headers, timeout=10)
         response.raise_for_status()
         result = response.json()
 
@@ -313,13 +314,12 @@ def format_report_message(
 
 def is_night_time() -> bool:
     """
-    현재 시간이 알림톡 발송 제한 시간(야간 20시~08시)인지 확인합니다.
+    현재 시간이 돌봄톡의 기본 조용한 시간(20시~08시)인지 확인합니다.
 
-    알림톡은 야간 발송이 제한되므로, 야간에는 친구톡으로 대체하거나
-    다음날 오전 8시로 발송을 지연해야 합니다.
+    실제 발송 허용 여부는 메시지 유형과 계약 공급사의 최신 정책을 따릅니다.
 
     Returns:
-        True이면 야간 시간대 (알림톡 발송 제한)
+        True이면 돌봄톡 기본 조용한 시간대
     """
     import datetime
     now = datetime.datetime.now()
@@ -394,7 +394,7 @@ if __name__ == "__main__":
     night = is_night_time()
     print(f"현재 야간 시간대: {night}")
     if night:
-        print("⚠️ 알림톡 발송 제한 시간입니다. 친구톡으로 대체하거나 지연 발송하세요.")
+        print("⚠️ 돌봄톡 기본 조용한 시간입니다. 사용자 설정과 공급사 정책을 확인하세요.")
     else:
         print("✅ 알림톡 발송 가능 시간입니다.")
 

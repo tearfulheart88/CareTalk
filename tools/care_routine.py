@@ -7,7 +7,7 @@ import json
 import re
 import secrets
 import sqlite3
-from datetime import datetime, time, timezone
+from datetime import datetime, time, timedelta, timezone
 from typing import Any, Optional
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -281,7 +281,7 @@ def record_phone_activity(
     senior_user_id: str,
     event_type: str,
     *,
-    source: str = "phone",
+    source: str = "demo",
     occurred_at: str = "",
     event_id: str = "",
     db_path: Optional[str] = None,
@@ -442,8 +442,9 @@ def _queue_event(
     cursor = conn.execute(
         """INSERT OR IGNORE INTO care_outbox
            (senior_user_id, recipient_user_id, event_type, severity,
-            payload_json, due_at, status, dedupe_key, created_at)
-           VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?)""",
+            payload_json, due_at, status, dedupe_key, created_at,
+            next_attempt_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?)""",
         (
             senior_user_id,
             recipient_user_id,
@@ -452,6 +453,8 @@ def _queue_event(
             json.dumps(payload, ensure_ascii=False),
             _iso(due_at),
             dedupe_key,
+            created_at,
+            _iso(due_at),
             created_at,
         ),
     )
@@ -979,8 +982,21 @@ def pause_care_routine(
             (now, senior_user_id),
         )
         cancelled = conn.execute(
-            """UPDATE care_outbox SET status = 'cancelled'
-               WHERE senior_user_id = ? AND status = 'pending'""",
+            """UPDATE care_outbox
+               SET status = 'cancelled', claim_token = NULL, claimed_at = NULL,
+                   updated_at = ?
+               WHERE senior_user_id = ? AND status IN ('pending', 'processing')""",
+            (now, senior_user_id),
+        ).rowcount
+        revoked_devices = conn.execute(
+            """UPDATE care_devices
+               SET status = 'revoked', revoked_at = ?
+               WHERE senior_user_id = ? AND status = 'active'""",
+            (now, senior_user_id),
+        ).rowcount
+        cancelled_pairings = conn.execute(
+            """UPDATE care_device_pairings SET status = 'cancelled'
+               WHERE senior_user_id = ? AND status = 'active'""",
             (senior_user_id,),
         ).rowcount
         conn.commit()
@@ -991,8 +1007,10 @@ def pause_care_routine(
         "phone_activity_enabled": False,
         "senior_consented": False,
         "pending_notifications_cancelled": cancelled,
+        "active_devices_revoked": revoked_devices,
+        "pairing_codes_cancelled": cancelled_pairings,
         "stored_history_deleted": False,
-        "message": "예약 질문과 휴대폰 활동 확인을 중지하고 미발송 알림을 취소했습니다. 기존 기록 삭제는 운영 정책에 따른 별도 요청이 필요합니다.",
+        "message": "예약 질문과 휴대폰 활동 확인을 중지하고 미발송 알림과 연결 기기를 해제했습니다. 기존 기록 삭제는 운영 정책에 따른 별도 요청이 필요합니다.",
     }
 
 
@@ -1089,18 +1107,74 @@ def get_care_routine_status(
 
 
 def claim_pending_notifications(
-    *, limit: int = 50, now: Optional[datetime] = None, db_path: Optional[str] = None
+    *,
+    limit: int = 50,
+    now: Optional[datetime] = None,
+    lease_seconds: int = 90,
+    max_attempts: int = 5,
+    db_path: Optional[str] = None,
 ) -> list[dict[str, Any]]:
-    """Internal adapter hook. This is intentionally not exposed as an MCP tool."""
+    """Atomically lease due outbox rows to one internal delivery worker."""
     path = _db_path(db_path)
     conn = _connect(path)
     try:
+        safe_now = now or _utcnow()
+        if safe_now.tzinfo is None:
+            safe_now = safe_now.replace(tzinfo=timezone.utc)
+        now_iso = _iso(safe_now)
+        lease_seconds = max(30, min(int(lease_seconds), 600))
+        max_attempts = max(1, min(int(max_attempts), 20))
+        stale_before = _iso(safe_now - timedelta(seconds=lease_seconds))
+        safe_limit = max(1, min(int(limit), 200))
+        claim_token = "claim_" + secrets.token_hex(16)
+
+        conn.execute("BEGIN IMMEDIATE")
+        conn.execute(
+            """UPDATE care_outbox
+               SET status = CASE WHEN attempt_count >= ? THEN 'failed' ELSE 'pending' END,
+                   claim_token = NULL, claimed_at = NULL,
+                   next_attempt_at = CASE
+                     WHEN attempt_count >= ? THEN NULL
+                     ELSE COALESCE(next_attempt_at, due_at)
+                   END,
+                   last_error = CASE
+                     WHEN last_error = '' THEN 'delivery lease expired'
+                     ELSE last_error
+                   END,
+                   updated_at = ?
+               WHERE status = 'processing'
+                 AND (claimed_at IS NULL OR claimed_at <= ?)""",
+            (max_attempts, max_attempts, now_iso, stale_before),
+        )
+        ids = [
+            row["id"]
+            for row in conn.execute(
+                """SELECT id FROM care_outbox
+                   WHERE status = 'pending' AND due_at <= ?
+                     AND (next_attempt_at IS NULL OR next_attempt_at <= ?)
+                     AND attempt_count < ?
+                   ORDER BY due_at, id LIMIT ?""",
+                (now_iso, now_iso, max_attempts, safe_limit),
+            ).fetchall()
+        ]
+        if not ids:
+            conn.commit()
+            return []
+        placeholders = ",".join("?" for _ in ids)
+        conn.execute(
+            f"""UPDATE care_outbox
+                SET status = 'processing', claim_token = ?, claimed_at = ?,
+                    attempt_count = attempt_count + 1, updated_at = ?
+                WHERE id IN ({placeholders}) AND status = 'pending'""",
+            (claim_token, now_iso, now_iso, *ids),
+        )
         rows = conn.execute(
             """SELECT * FROM care_outbox
-               WHERE status = 'pending' AND due_at <= ?
-               ORDER BY due_at, id LIMIT ?""",
-            (_iso(now or _utcnow()), max(1, min(int(limit), 200))),
+               WHERE claim_token = ? AND status = 'processing'
+               ORDER BY due_at, id""",
+            (claim_token,),
         ).fetchall()
+        conn.commit()
     finally:
         conn.close()
     results = []
@@ -1118,20 +1192,73 @@ def mark_notification_delivery(
     outbox_id: int,
     status: str,
     *,
+    claim_token: str = "",
+    error: str = "",
+    provider_message_id: str = "",
+    max_attempts: int = 5,
+    base_delay_seconds: int = 30,
+    now: Optional[datetime] = None,
     db_path: Optional[str] = None,
 ) -> bool:
-    """Mark an adapter delivery as sent or failed without exposing it to the model."""
+    """Complete a leased delivery or return it to the queue with backoff."""
     if status not in {"sent", "failed"}:
         raise ValueError("status must be sent or failed")
+    if not claim_token:
+        raise ValueError("claim_token is required")
     path = _db_path(db_path)
     conn = _connect(path)
     try:
-        cursor = conn.execute(
-            """UPDATE care_outbox
-               SET status = ?, sent_at = CASE WHEN ? = 'sent' THEN ? ELSE sent_at END
-               WHERE id = ? AND status = 'pending'""",
-            (status, status, _iso(_utcnow()), int(outbox_id)),
-        )
+        safe_now = now or _utcnow()
+        if safe_now.tzinfo is None:
+            safe_now = safe_now.replace(tzinfo=timezone.utc)
+        now_iso = _iso(safe_now)
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute(
+            """SELECT attempt_count FROM care_outbox
+               WHERE id = ? AND status = 'processing' AND claim_token = ?""",
+            (int(outbox_id), claim_token),
+        ).fetchone()
+        if row is None:
+            conn.commit()
+            return False
+        attempts = int(row["attempt_count"])
+        if status == "sent":
+            cursor = conn.execute(
+                """UPDATE care_outbox
+                   SET status = 'sent', sent_at = ?, provider_message_id = ?,
+                       last_error = '', claim_token = NULL, claimed_at = NULL,
+                       next_attempt_at = NULL, updated_at = ?
+                   WHERE id = ? AND status = 'processing' AND claim_token = ?""",
+                (
+                    now_iso,
+                    str(provider_message_id or "")[:200],
+                    now_iso,
+                    int(outbox_id),
+                    claim_token,
+                ),
+            )
+        else:
+            safe_max_attempts = max(1, min(int(max_attempts), 20))
+            terminal = attempts >= safe_max_attempts
+            delay = min(
+                max(5, int(base_delay_seconds)) * (2 ** max(0, attempts - 1)),
+                3600,
+            )
+            next_attempt = None if terminal else _iso(safe_now + timedelta(seconds=delay))
+            cursor = conn.execute(
+                """UPDATE care_outbox
+                   SET status = ?, next_attempt_at = ?, last_error = ?,
+                       claim_token = NULL, claimed_at = NULL, updated_at = ?
+                   WHERE id = ? AND status = 'processing' AND claim_token = ?""",
+                (
+                    "failed" if terminal else "pending",
+                    next_attempt,
+                    str(error or "delivery failed")[:500],
+                    now_iso,
+                    int(outbox_id),
+                    claim_token,
+                ),
+            )
         conn.commit()
         return cursor.rowcount == 1
     finally:
@@ -1163,6 +1290,10 @@ def manage_care_routine(
     now: str = "",
     outbox_id: int = 0,
     response: str = "",
+    device_type: str = "phone",
+    device_label: str = "",
+    device_id: str = "",
+    pairing_minutes: int = 10,
     db_path: Optional[str] = None,
 ) -> dict[str, Any]:
     action = str(action or "status").strip().lower()
@@ -1186,6 +1317,13 @@ def manage_care_routine(
             db_path=db_path,
         )
     if action == "record_activity":
+        if source not in {"manual", "demo"}:
+            return {
+                "error": (
+                    "실제 phone·wearable 신호는 기기 토큰으로 /device/activity에 보내야 합니다. "
+                    "MCP의 record_activity는 manual·demo 검증용입니다."
+                )
+            }
         return record_phone_activity(
             requester_user_id,
             senior_user_id,
@@ -1211,8 +1349,44 @@ def manage_care_routine(
         return pause_care_routine(
             requester_user_id, senior_user_id, db_path=db_path
         )
+    if action in {"create_device_pairing", "list_devices", "revoke_device"}:
+        from services.device_bridge import (
+            DeviceBridgeError,
+            create_device_pairing,
+            list_care_devices,
+            revoke_care_device,
+        )
+
+        try:
+            if action == "create_device_pairing":
+                return create_device_pairing(
+                    requester_user_id,
+                    senior_user_id,
+                    device_type=device_type,
+                    label=device_label,
+                    senior_consented=senior_consented,
+                    expires_minutes=pairing_minutes,
+                    db_path=db_path,
+                )
+            if action == "list_devices":
+                return list_care_devices(
+                    requester_user_id, senior_user_id, db_path=db_path
+                )
+            return revoke_care_device(
+                requester_user_id,
+                senior_user_id,
+                device_id,
+                db_path=db_path,
+            )
+        except DeviceBridgeError as exc:
+            return {"error": str(exc)}
     if action == "status":
         return get_care_routine_status(
             requester_user_id, senior_user_id, now=now, db_path=db_path
         )
-    return {"error": "action은 configure, record_activity, run_due, acknowledge, status, pause 중 하나여야 합니다."}
+    return {
+        "error": (
+            "action은 configure, record_activity, run_due, acknowledge, status, pause, "
+            "create_device_pairing, list_devices, revoke_device 중 하나여야 합니다."
+        )
+    }

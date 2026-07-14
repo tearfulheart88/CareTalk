@@ -66,6 +66,8 @@ def _sanitize_placeholder_env() -> None:
         "KAKAO_CLIENT_SECRET",
         "KAKAO_BIZ_API_KEY",
         "KAKAO_SENDER_KEY",
+        "CARETALK_DELIVERY_WEBHOOK_URL",
+        "CARETALK_DELIVERY_WEBHOOK_SECRET",
     ):
         if _is_placeholder_value(os.environ.get(key)):
             os.environ.pop(key, None)
@@ -79,10 +81,17 @@ def _env_configured(key: str) -> bool:
 def _api_key_status() -> Dict[str, Dict[str, Any]]:
     return {
         "openai": {"env": "OPENAI_API_KEY", "configured": _env_configured("OPENAI_API_KEY")},
-        "kakao_rest": {"env": "KAKAO_REST_API_KEY", "configured": _env_configured("KAKAO_REST_API_KEY")},
-        "kakao_client_secret": {"env": "KAKAO_CLIENT_SECRET", "configured": _env_configured("KAKAO_CLIENT_SECRET")},
-        "kakao_biz": {"env": "KAKAO_BIZ_API_KEY", "configured": _env_configured("KAKAO_BIZ_API_KEY")},
-        "kakao_sender": {"env": "KAKAO_SENDER_KEY", "configured": _env_configured("KAKAO_SENDER_KEY")},
+        "kakao_login": {
+            "env": "KAKAO_REST_API_KEY",
+            "configured": _env_configured("KAKAO_REST_API_KEY"),
+        },
+        "delivery_gateway": {
+            "env": "CARETALK_DELIVERY_WEBHOOK_URL + CARETALK_DELIVERY_WEBHOOK_SECRET",
+            "configured": (
+                _env_configured("CARETALK_DELIVERY_WEBHOOK_URL")
+                and _env_configured("CARETALK_DELIVERY_WEBHOOK_SECRET")
+            ),
+        },
     }
 
 
@@ -147,7 +156,59 @@ def _get_mock_weather():
 TOOL_DEFINITIONS = [
     {"name": "care_guide", "description": "첫 사용 목적·사용법·추천 답변·접근성·FAQ·개인정보 안내. action: start, examples, faq, accessibility, privacy", "inputSchema": {"type": "object", "properties": {"action": {"type": "string", "enum": ["start", "examples", "faq", "accessibility", "privacy"]}, "question": {"type": "string"}, "audience": {"type": "string", "enum": ["senior", "family", "helper"]}}}},
     {"name": "care_circle", "description": "어르신 동의 기반 가족 계정 연결·권한·해제. action: create_invite, join, list, update_permissions, revoke", "inputSchema": {"type": "object", "properties": {"action": {"type": "string", "enum": ["create_invite", "join", "list", "update_permissions", "revoke"]}, "requester_user_id": {"type": "string"}, "senior_user_id": {"type": "string"}, "nickname": {"type": "string"}, "invite_code": {"type": "string"}, "role": {"type": "string", "enum": ["family", "guardian", "helper"]}, "permissions": {"type": "string", "description": "쉼표 구분: view_summary, receive_inactivity_alerts, receive_emergency_alerts, manage_schedule"}, "target_user_id": {"type": "string"}, "circle_name": {"type": "string"}, "senior_consented": {"type": "boolean"}, "invite_hours": {"type": "integer", "minimum": 1, "maximum": 72}}, "required": ["action", "requester_user_id"]}},
-    {"name": "care_routine", "description": "예약 안부·가족 요약·휴대폰 활동 부재 확인·가족 응답·동의 철회 대기열. action: configure, record_activity, run_due, acknowledge, status, pause", "inputSchema": {"type": "object", "properties": {"action": {"type": "string", "enum": ["configure", "record_activity", "run_due", "acknowledge", "status", "pause"]}, "requester_user_id": {"type": "string"}, "senior_user_id": {"type": "string"}, "prompt_times": {"type": "string", "description": "쉼표로 구분한 HH:MM"}, "digest_times": {"type": "string", "description": "쉼표로 구분한 HH:MM"}, "timezone_name": {"type": "string"}, "response_window_minutes": {"type": "integer"}, "inactivity_hours": {"type": "integer"}, "escalation_hours": {"type": "integer"}, "inactivity_grace_minutes": {"type": "integer"}, "inactivity_mode": {"type": "string", "enum": ["both", "either"]}, "quiet_start": {"type": "string"}, "quiet_end": {"type": "string"}, "phone_activity_enabled": {"type": "boolean"}, "wearable_enabled": {"type": "boolean"}, "senior_consented": {"type": "boolean"}, "event_type": {"type": "string", "enum": ["screen_unlock", "app_open", "manual_confirm", "device_motion", "wearable_sync"]}, "source": {"type": "string", "enum": ["phone", "wearable", "manual", "demo"]}, "occurred_at": {"type": "string"}, "event_id": {"type": "string"}, "now": {"type": "string"}, "outbox_id": {"type": "integer"}, "response": {"type": "string", "enum": ["확인했어요", "전화해볼게요", "방문 확인할게요", "해결됐어요", "도움이 더 필요해요"]}}, "required": ["action", "requester_user_id", "senior_user_id"]}},
+    {
+        "name": "care_routine",
+        "description": (
+            "예약 안부·가족 요약·휴대폰 활동 부재 확인·가족 응답·동의 철회와 "
+            "휴대폰·웨어러블 연결 관리"
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": [
+                        "configure", "record_activity", "run_due", "acknowledge",
+                        "status", "pause", "create_device_pairing", "list_devices",
+                        "revoke_device",
+                    ],
+                },
+                "requester_user_id": {"type": "string"},
+                "senior_user_id": {"type": "string"},
+                "prompt_times": {"type": "string", "description": "쉼표로 구분한 HH:MM"},
+                "digest_times": {"type": "string", "description": "쉼표로 구분한 HH:MM"},
+                "timezone_name": {"type": "string"},
+                "response_window_minutes": {"type": "integer"},
+                "inactivity_hours": {"type": "integer"},
+                "escalation_hours": {"type": "integer"},
+                "inactivity_grace_minutes": {"type": "integer"},
+                "inactivity_mode": {"type": "string", "enum": ["both", "either"]},
+                "quiet_start": {"type": "string"},
+                "quiet_end": {"type": "string"},
+                "phone_activity_enabled": {"type": "boolean"},
+                "wearable_enabled": {"type": "boolean"},
+                "senior_consented": {"type": "boolean"},
+                "event_type": {
+                    "type": "string",
+                    "enum": ["screen_unlock", "app_open", "manual_confirm", "device_motion", "wearable_sync"],
+                },
+                "source": {"type": "string", "enum": ["phone", "wearable", "manual", "demo"]},
+                "occurred_at": {"type": "string"},
+                "event_id": {"type": "string"},
+                "now": {"type": "string"},
+                "outbox_id": {"type": "integer"},
+                "response": {
+                    "type": "string",
+                    "enum": ["확인했어요", "전화해볼게요", "방문 확인할게요", "해결됐어요", "도움이 더 필요해요"],
+                },
+                "device_type": {"type": "string", "enum": ["phone", "wearable"]},
+                "device_label": {"type": "string"},
+                "device_id": {"type": "string"},
+                "pairing_minutes": {"type": "integer", "minimum": 5, "maximum": 30},
+            },
+            "required": ["action", "requester_user_id", "senior_user_id"],
+        },
+    },
     {"name": "daily_checkin", "description": "매일 안부 확인. action: initiate(안부 메시지 생성), analyze(응답 감정 분석), no_response(무응답 확인)", "inputSchema": {"type": "object", "properties": {"user_id": {"type": "string"}, "action": {"type": "string", "enum": ["initiate", "analyze", "no_response"]}, "message": {"type": "string"}, "nickname": {"type": "string"}}, "required": ["user_id"]}},
     {"name": "emergency_detect", "description": "위험 신호 실시간 감지. action: detect(메시지 위험 판정), silence(무응답 경보)", "inputSchema": {"type": "object", "properties": {"user_id": {"type": "string"}, "message": {"type": "string"}, "action": {"type": "string", "enum": ["detect", "silence"]}}, "required": ["user_id"]}},
     {"name": "family_report", "description": "가족용 주간/일일 돌봄 리포트 생성. report_type: weekly(주간), daily(일일)", "inputSchema": {"type": "object", "properties": {"senior_user_id": {"type": "string"}, "report_type": {"type": "string", "enum": ["weekly", "daily"]}}, "required": ["senior_user_id"]}},
@@ -188,6 +249,9 @@ _TEXT_LIMITS = {
     "event_id": 128,
     "now": 64,
     "response": 80,
+    "device_type": 16,
+    "device_label": 40,
+    "device_id": 80,
 }
 
 
@@ -268,12 +332,16 @@ def execute_tool(name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
             wearable_enabled=arguments.get("wearable_enabled", False),
             senior_consented=arguments.get("senior_consented", False),
             event_type=arguments.get("event_type", ""),
-            source=arguments.get("source", "phone"),
+            source=arguments.get("source", "demo"),
             occurred_at=arguments.get("occurred_at", ""),
             event_id=arguments.get("event_id", ""),
             now=arguments.get("now", ""),
             outbox_id=arguments.get("outbox_id", 0),
             response=arguments.get("response", ""),
+            device_type=arguments.get("device_type", "phone"),
+            device_label=arguments.get("device_label", ""),
+            device_id=arguments.get("device_id", ""),
+            pairing_minutes=arguments.get("pairing_minutes", 10),
             db_path=DB_PATH,
         )
     elif name == "daily_checkin":
@@ -533,7 +601,17 @@ def care_circle(
     ),
 )
 def care_routine(
-    action: Literal["configure", "record_activity", "run_due", "acknowledge", "status", "pause"],
+    action: Literal[
+        "configure",
+        "record_activity",
+        "run_due",
+        "acknowledge",
+        "status",
+        "pause",
+        "create_device_pairing",
+        "list_devices",
+        "revoke_device",
+    ],
     requester_user_id: str,
     senior_user_id: str,
     prompt_times: str = "09:00,14:00,20:00",
@@ -550,14 +628,18 @@ def care_routine(
     wearable_enabled: bool = False,
     senior_consented: bool = False,
     event_type: Literal["screen_unlock", "app_open", "manual_confirm", "device_motion", "wearable_sync", ""] = "",
-    source: Literal["phone", "wearable", "manual", "demo"] = "phone",
+    source: Literal["phone", "wearable", "manual", "demo"] = "demo",
     occurred_at: str = "",
     event_id: str = "",
     now: str = "",
     outbox_id: int = 0,
     response: str = "",
+    device_type: Literal["phone", "wearable"] = "phone",
+    device_label: str = "",
+    device_id: str = "",
+    pairing_minutes: int = 10,
 ) -> Dict[str, Any]:
-    """예약 메시지와 최소 활동 신호를 대기열로 연결하며 직접 발송은 수행하지 않습니다."""
+    """예약 메시지·최소 활동 신호와 동의된 기기 연결을 관리합니다."""
     return _tool_result("care_routine", locals())
 
 
@@ -750,9 +832,12 @@ def _server_info() -> Dict[str, Any]:
         mode = "live"
     else:
         mode = "rules_fallback"
+    from services.care_worker import care_worker_status
+
+    worker_enabled = _env_bool("CARE_WORKER_ENABLED", True)
     return {
         "server": "caretalk",
-        "version": "3.2.0",
+        "version": "3.3.0",
         "status": "ok",
         "mode": mode,
         "mock_mode": MOCK_MODE,
@@ -761,6 +846,15 @@ def _server_info() -> Dict[str, Any]:
         "endpoint": "/mcp",
         "transport": "streamable-http",
         "api_keys": _api_key_status(),
+        "worker": care_worker_status(DB_PATH, enabled=worker_enabled),
+        "device_bridge": {
+            "pairing_endpoint": "/device/pair",
+            "activity_endpoint": "/device/activity",
+            "health_endpoint": "/device/health",
+            "token_storage": "sha256_hash_only",
+            "exact_location_collected": False,
+            "screen_content_collected": False,
+        },
     }
 
 
@@ -772,6 +866,117 @@ async def root_status(_request: Request) -> JSONResponse:
 @mcp.custom_route("/health", methods=["GET"])
 async def health_status(_request: Request) -> JSONResponse:
     return JSONResponse(_server_info())
+
+
+_MAX_DEVICE_BODY_BYTES = 16 * 1024
+
+
+def _device_response(data: Dict[str, Any], status_code: int = 200) -> JSONResponse:
+    return JSONResponse(
+        data,
+        status_code=status_code,
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+async def _read_device_json(request: Request) -> tuple[Optional[Dict[str, Any]], Optional[JSONResponse]]:
+    content_type = request.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+    if content_type != "application/json":
+        return None, _device_response({"error": "Content-Type은 application/json이어야 합니다."}, 415)
+    content_length = request.headers.get("content-length", "")
+    if content_length:
+        try:
+            parsed_length = int(content_length)
+            if parsed_length < 0:
+                return None, _device_response({"error": "올바르지 않은 Content-Length입니다."}, 400)
+            if parsed_length > _MAX_DEVICE_BODY_BYTES:
+                return None, _device_response({"error": "요청 본문이 너무 큽니다."}, 413)
+        except ValueError:
+            return None, _device_response({"error": "올바르지 않은 Content-Length입니다."}, 400)
+    body = bytearray()
+    async for chunk in request.stream():
+        body.extend(chunk)
+        if len(body) > _MAX_DEVICE_BODY_BYTES:
+            return None, _device_response({"error": "요청 본문이 너무 큽니다."}, 413)
+    try:
+        data = json.loads(bytes(body))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return None, _device_response({"error": "올바른 JSON 객체를 보내 주세요."}, 400)
+    if not isinstance(data, dict):
+        return None, _device_response({"error": "JSON 본문은 객체여야 합니다."}, 400)
+    return data, None
+
+
+def _bearer_token(request: Request) -> str:
+    authorization = request.headers.get("authorization", "")
+    scheme, _, token = authorization.partition(" ")
+    if scheme.lower() != "bearer" or not token.strip():
+        from services.device_bridge import DeviceBridgeError
+
+        raise DeviceBridgeError("Authorization Bearer 기기 토큰이 필요합니다.", 401)
+    return token.strip()
+
+
+@mcp.custom_route("/device/pair", methods=["POST"])
+async def pair_device(request: Request) -> JSONResponse:
+    from services.device_bridge import DeviceBridgeError, exchange_device_pairing
+
+    data, error_response = await _read_device_json(request)
+    if error_response is not None:
+        return error_response
+    try:
+        result = exchange_device_pairing(
+            str((data or {}).get("pairing_code", "")),
+            db_path=DB_PATH,
+        )
+        return _device_response(result, 201)
+    except DeviceBridgeError as exc:
+        return _device_response({"error": str(exc)}, exc.status_code)
+
+
+@mcp.custom_route("/device/activity", methods=["POST"])
+async def receive_device_activity(request: Request) -> JSONResponse:
+    from services.device_bridge import DeviceBridgeError, ingest_device_activity
+
+    data, error_response = await _read_device_json(request)
+    if error_response is not None:
+        return error_response
+    try:
+        result = ingest_device_activity(
+            _bearer_token(request),
+            str((data or {}).get("event_type", "")),
+            occurred_at=str((data or {}).get("occurred_at", "")),
+            event_id=str((data or {}).get("event_id", "")),
+            db_path=DB_PATH,
+        )
+        return _device_response(result)
+    except DeviceBridgeError as exc:
+        return _device_response({"error": str(exc)}, exc.status_code)
+
+
+@mcp.custom_route("/device/health", methods=["POST"])
+async def receive_device_health(request: Request) -> JSONResponse:
+    from services.device_bridge import DeviceBridgeError, ingest_device_health
+
+    data, error_response = await _read_device_json(request)
+    if error_response is not None:
+        return error_response
+    try:
+        result = ingest_device_health(
+            _bearer_token(request),
+            str((data or {}).get("event_id", "")),
+            str((data or {}).get("data_type", "")),
+            (data or {}).get("value"),
+            occurred_at=str((data or {}).get("occurred_at", "")),
+            db_path=DB_PATH,
+        )
+        response_status = {
+            "duplicate_ignored": 200,
+            "processing": 202,
+        }.get(str(result.get("status")), 201)
+        return _device_response(result, response_status)
+    except DeviceBridgeError as exc:
+        return _device_response({"error": str(exc)}, exc.status_code)
 
 def parse_args():
     parser = argparse.ArgumentParser(description="돌봄톡(CareTalk) MCP 서버")
@@ -799,6 +1004,13 @@ def main():
     # 시작 시 스키마 보장 (테이블 없으면 생성) — 단일 진실원천: db/schema.py
     from db.schema import ensure_schema
     ensure_schema(DB_PATH)
+    if _env_bool("CARE_WORKER_ENABLED", True):
+        from services.care_worker import start_care_worker
+
+        start_care_worker(DB_PATH)
+        logger.info("예약·전달 worker 시작")
+    else:
+        logger.info("예약·전달 worker 비활성화")
     if args.init_db:
         logger.info("DB 초기화(스키마 보장) 완료: " + DB_PATH)
     logger.info("돌봄톡 MCP 서버 시작 - http://%s:%s/mcp", args.host, args.port)

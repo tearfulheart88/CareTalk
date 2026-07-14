@@ -5,9 +5,10 @@
 ## 현재 상태
 
 - 공식 `FastMCP` 기반 stateless Streamable HTTP 서버
-- endpoint `/mcp`, health endpoint `/health`
+- endpoint `/mcp`, 상태 `/health`, 기기 `/device/pair`·`/device/activity`·`/device/health`
 - Tool 12개 등록
-- 직접 함수 E2E 227개 회귀 케이스 통과
+- 직접 함수 E2E 264개 회귀 케이스 통과
+- 실제 HTTP·기기 API·공식 MCP 통합 16개 항목 통과
 - 공식 MCP Python 클라이언트로 initialize, tools/list, tools/call 통과
 - 실제 Streamable HTTP Mock 호출 13.4ms(로컬 1회 측정, 환경에 따라 변동)
 - 12개 Tool의 PlayMCP annotations 5개와 한·영 설명 검증 통과
@@ -49,12 +50,21 @@
 31. 가족의 일정 관리 권한은 질문·요약 시각에 한정하고, 활동·웨어러블 수집 범위 변경과 철회된 동의 재활성화를 차단했습니다.
 32. 예약 시각을 `HH:MM`으로 정규화하고 중지 상태를 `paused`·`disabled`로 일관되게 표시합니다.
 33. 웨어러블 없이도 기본 돌봄이 작동하고, 동의 시에만 맥박 등 기기 건강 기록을 더하는 선택 구조를 안내합니다.
+34. 서버 내장 worker가 동의된 예약을 주기 실행하며, 중복 실행은 고유 키로 차단합니다.
+35. outbox를 원자적 lease로 점유하고 worker 중단 시 만료 lease를 회수합니다.
+36. 전달 실패는 최대 횟수와 지수 백오프를 적용하고 공급사 메시지 ID와 오류를 감사 기록으로 남깁니다.
+37. 기본 `outbox` 모드는 외부 발송을 하지 않으며, `webhook` 모드만 운영자 HTTPS 게이트웨이를 호출합니다.
+38. 전달 본문은 HMAC-SHA256·Idempotency-Key로 보호하고 전화번호·공급사 키를 포함하지 않습니다.
+39. 어르신이 만드는 5~30분 일회용 코드로 휴대폰·웨어러블을 연결하고 코드·토큰은 해시만 저장합니다.
+40. 실제 기기 활동과 건강 수치는 Bearer 기기 토큰이 필요한 전용 API에서 중복 없이 수취합니다.
+41. `pause` 또는 기기 해제 시 활성 토큰·미사용 연결 코드·미발송 알림을 함께 폐기합니다.
 
 ## 검증 명령
 
 ```powershell
 python -m compileall -q .
 python _e2e_test.py
+python _http_integration_test.py
 python server.py --mock --host 127.0.0.1 --port 9000
 ```
 
@@ -65,9 +75,9 @@ python server.py --mock --host 127.0.0.1 --port 9000
 - 실제 OpenAI 출품 전용 키로 호출·비용·쿼터 모니터링 검증
 - 카카오 로그인: 앱 설정과 Redirect URI, 사용자 동의
 - 실제 알림톡: 비즈채널, 발신프로필, 템플릿 승인, 공급사 API
-- 예약 실행: 호스팅 cron/worker에서 `care_routine run_due` 주기 호출
-- 휴대폰 활동: 별도 모바일/기기 어댑터, OS 권한과 어르신 동의
-- 운영 대기열: 다중 인스턴스용 공유 DB와 재시도·전달 감사 로그
+- 실제 알림톡 전달: `CARETALK_DELIVERY_MODE=webhook`과 운영자 소유 HTTPS 게이트웨이 Secret
+- 휴대폰 활동: 구현된 기기 API를 호출할 별도 동반 앱, OS 권한과 어르신 동의
+- 다중 인스턴스 운영: SQLite 대신 공유 DB 또는 단일 worker/공유 영속 볼륨
 - 실제 건강시설 검색: 공공데이터 API 교체
 - 운영 개인정보: 인증·권한·암호화·보존/삭제·동의 정책
 - PlayMCP in KC 빌드 및 최종 등록

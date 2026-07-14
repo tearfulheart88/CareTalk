@@ -35,6 +35,8 @@
 - SQLite 일일 한도, 분당·동시 호출 제한, 2.5초 타임아웃 상한 적용
 - PlayMCP 필수 Tool annotations 5개를 12개 Tool에 모두 명시
 - SQLite 기반 체크인·건강 기록·가족 권한·예약·알림 대기열 연결
+- 내장 예약 worker, 원자적 outbox lease, 지수 백오프 재시도와 전달 감사 기록
+- HMAC-SHA256 서명 HTTPS 전달 게이트웨이와 해시 토큰 기반 기기 수취 API
 - 카카오 응답 포맷용 Widget A/B JSON 생성
 - 직접 함수 E2E와 실제 MCP 클라이언트 핸드셰이크 검증
 
@@ -44,7 +46,7 @@
 |---|---|---|
 | `care_guide` | 어르신·가족 첫 안내, 추천 답변, 접근성, FAQ, 개인정보 | `start`, `examples`, `faq`, `accessibility`, `privacy` |
 | `care_circle` | 일회용 초대, 여러 가족 계정 연결, 계정별 공유 권한과 해제 | `create_invite`, `join`, `list`, `update_permissions`, `revoke` |
-| `care_routine` | 예약 질문, 가족 요약, 휴대폰 활동 부재 단계 확인, 가족 응답 수취·중지 | `configure`, `record_activity`, `run_due`, `acknowledge`, `status`, `pause` |
+| `care_routine` | 예약 질문, 가족 요약, 활동 부재 확인, 가족 응답, 휴대폰·웨어러블 연결·중지 | `configure`, `run_due`, `acknowledge`, `status`, `pause`, `create_device_pairing`, `list_devices`, `revoke_device` |
 | `daily_checkin` | 안부 메시지 생성, 응답 분석, 무응답 확인 | `initiate`, `analyze`, `no_response` |
 | `emergency_detect` | 위험 표현과 장기 무응답을 보수적으로 판정 | `detect`, `silence` |
 | `family_report` | 일일·주간 가족 리포트 생성 | `daily`, `weekly` |
@@ -62,7 +64,7 @@
 - 호흡 곤란, 의식 소실, 구조 요청 같은 명시적 RED 신호는 LLM이 하향할 수 없습니다.
 - OpenAI 호출 실패 시에도 규칙 기반 위험 등급을 유지합니다.
 - RED 응답은 119 연락을 안내하지만 신고나 출동이 완료됐다고 표시하지 않습니다.
-- `notify_targets`와 카카오 JSON은 발송 요청 데이터입니다. MCP Tool 자체가 알림톡을 보내지는 않습니다.
+- `notify_targets`와 카카오 JSON은 발송 요청 데이터입니다. MCP Tool 호출 자체는 알림톡·신고·전화를 수행하지 않습니다.
 - 건강 수치는 명백한 오입력과 비유한수 값을 저장 전에 차단합니다.
 - 한 문장에 혈압·혈당 등 여러 수치가 함께 있어도 이름이 명시된 값을 각각 기록합니다.
 - 건강 범위는 참고용 자동 분류이며 증상과 개인별 목표치는 의료진 판단을 우선합니다.
@@ -70,6 +72,8 @@
 - 체중은 키·평소 기준·질환 정보 없이 절대값으로 위험 판정하지 않고 변화 추세만 확인합니다.
 - 안전계획은 전화번호·주소·이메일을 받지 않고 관계 역할만 사용하며, 동의 전에는 초안 상태로 유지합니다.
 - 가족 연결은 평문을 저장하지 않는 일회용 초대코드와 계정별 최소 권한을 사용하며 즉시 해제할 수 있습니다.
+- 기기 연결도 5~30분짜리 일회용 코드로 수행하고, 연결 코드와 장기 기기 토큰은 SHA-256 해시만 저장합니다.
+- 실제 `phone`·`wearable` 신호는 Bearer 기기 토큰이 필요한 전용 API만 받으며 MCP의 `record_activity`는 `manual`·`demo` 검증용입니다.
 - 가족 요약은 당일 전체 질문·응답률과 식사·복약·활동·불편 신호만 집계하며 원문 대화는 공유하지 않습니다.
 - 일정 관리 권한이 있는 가족도 활동·웨어러블 수집 범위를 바꾸거나 어르신이 철회한 동의를 다시 켤 수 없습니다.
 - 휴대폰 활동 확인은 동의 시 마지막 화면 사용·이동 시각만 저장하고 정확한 위치, 화면 내용, 원시 센서값은 저장하지 않습니다.
@@ -88,6 +92,9 @@ python server.py --mock --host 127.0.0.1 --port 9000
 
 - 상태: `http://127.0.0.1:9000/health`
 - MCP: `http://127.0.0.1:9000/mcp`
+- 기기 연결: `POST http://127.0.0.1:9000/device/pair`
+- 최소 활동: `POST http://127.0.0.1:9000/device/activity`
+- 기기 건강: `POST http://127.0.0.1:9000/device/health`
 
 Mock 모드는 외부 API를 호출하지 않습니다. `.env.example`을 참고해 `.env`를 만들거나
 배포 환경변수에 키를 설정하면 실제 OpenAI 경로를 사용할 수 있습니다.
@@ -99,6 +106,8 @@ OPENAI_TIMEOUT_SECONDS=2.2
 MOCK_MODE=true
 LIVE_API_ENABLED=false
 CARETALK_DB_PATH=./db/caretalk.db
+CARE_WORKER_ENABLED=true
+CARETALK_DELIVERY_MODE=outbox
 ```
 
 `MOCK_MODE=true` 또는 `--mock`이면 규칙 기반으로 실행합니다. `--live`만 명시했을 때
@@ -120,11 +129,12 @@ CARETALK_DB_PATH=./db/caretalk.db
 
 ```powershell
 python _e2e_test.py
+python _http_integration_test.py
 python -m compileall -q .
 ```
 
-현재 E2E 검증은 227개이며, 실제 Streamable HTTP 클라이언트로 12개 Tool metadata,
-대표 호출, 오류 응답의 MCP `isError`도 확인합니다.
+현재 E2E 검증은 264개이며, 실제 Streamable HTTP 클라이언트로 12개 Tool metadata,
+대표 호출, 오류 응답의 MCP `isError`와 기기 API 16개 통합 항목도 확인합니다.
 
 실제 MCP 연결은 공식 Python SDK의 `streamable_http_client`로 다음 순서를 검증합니다.
 
@@ -139,13 +149,29 @@ python -m compileall -q .
 |---|---|---|
 | OpenAI | MCP 실행 경로에 연결됨 | `OPENAI_API_KEY` |
 | 카카오 로그인 | `services/kakao_auth.py` 어댑터 구현, MCP Tool에는 미연결 | 카카오 앱 설정·Redirect URI |
-| 카카오 알림톡 | `services/alimtalk.py` 어댑터 구현, MCP Tool은 메시지 생성까지만 수행 | 비즈채널·발신프로필·템플릿 승인·공급사 API |
-| 예약 실행기 | 예약·중복 방지·영속 대기열 구현, 직접 발송하지 않음 | 호스팅 cron/worker와 승인된 발송 어댑터 |
-| 휴대폰 활동 | 최소 활동 이벤트 수신·단계 알림 구현 | 별도 모바일 앱 또는 기기 어댑터의 OS 권한과 사용자 동의 |
+| 카카오 알림톡 | 공급사 중립 서명 웹훅·재시도 구현, 기본값은 무발송 `outbox` | 비즈채널·승인 템플릿·계약 공급사와 비공개 전달 게이트웨이 |
+| 예약 실행기 | 서버 내장 worker와 중복 방지 영속 대기열 구현 | 배포 DB의 영속 볼륨, 다중 인스턴스면 공유 DB/단일 worker |
+| 휴대폰·웨어러블 | 일회용 페어링, 해시 토큰 인증, 활동·건강 중복 방지 API 구현 | 별도 동반 앱의 OS 권한과 어르신 동의 |
 | 건강시설 | 현재 내장 데모 데이터 | 실서비스 전 공공데이터 API 교체 |
 
-카카오 키가 없어도 MCP 등록과 Tool 테스트는 가능합니다. 실제 로그인 또는 알림톡 발송을
-시연할 때만 카카오 키와 사전 승인이 필요합니다.
+카카오 키가 없어도 MCP 등록, worker, 기기 API와 `outbox` 검증은 가능합니다. [카카오 공식 안내](https://developers.kakao.com/docs/ko/kakaotalk-message/faq)상
+서비스가 이용자에게 정보성 알림을 보내는 경우에는 카카오톡 메시지 API가 아니라 알림톡을 사용해야
+합니다. 실제 발송은 비즈채널·템플릿 승인·계약 공급사를 준비한 뒤 비공개 게이트웨이에서 수행합니다.
+
+### 실제 전달 켜기
+
+공개 MCP 컨테이너에 개인 카카오 키를 넣지 않습니다. 운영자 소유 게이트웨이가 불투명 계정 ID를
+승인된 수신 채널로 매핑하도록 아래 값만 서버 Secret으로 설정합니다.
+
+```dotenv
+CARETALK_DELIVERY_MODE=webhook
+CARETALK_DELIVERY_WEBHOOK_URL=https://your-private-gateway.example/caretalk
+CARETALK_DELIVERY_WEBHOOK_SECRET=32바이트_이상의_무작위_비밀값
+```
+
+돌봄톡은 정렬된 JSON 본문을 `HMAC-SHA256`으로 서명해 `X-CareTalk-Signature`에 넣고,
+`Idempotency-Key`도 함께 보냅니다. 게이트웨이는 서명을 먼저 검증하고 같은 키를 한 번만 처리해야
+합니다. 실패한 전달은 최대 5회까지 지수 백오프로 재시도하며 `/health`의 `worker.outbox`에서 상태를 확인합니다.
 
 ## 데이터와 개인정보
 
@@ -187,8 +213,12 @@ server.py                 FastMCP 서버, Tool 등록과 디스패치
 tools/                    가족 연결·예약 돌봄·체크인·응급·건강·회상·시설 기능
 _widgets/                 카카오 응답 JSON 생성기
 db/schema.py              SQLite 스키마 단일 진실원천
+services/care_worker.py   예약 실행과 outbox 전달 worker
+services/device_bridge.py 기기 페어링·토큰 인증·활동/건강 수취
+services/notification_delivery.py  HMAC 서명 전달 웹훅
 services/                 OpenAI/Kakao 연동 어댑터
 services/usage_guard.py   API 일일·분당·동시 호출 및 비밀값 보호
 _e2e_test.py              회귀·안전·입력 검증
+_http_integration_test.py 실제 HTTP·기기 인증·공식 MCP 클라이언트 검증
 Dockerfile                PlayMCP in KC 배포 이미지
 ```

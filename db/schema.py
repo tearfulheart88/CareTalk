@@ -128,7 +128,8 @@ CREATE TABLE IF NOT EXISTS health_logs (
     data_type    TEXT NOT NULL,
     value        TEXT NOT NULL,
     normal_range INTEGER DEFAULT 1,
-    source       TEXT DEFAULT 'manual'
+    source       TEXT DEFAULT 'manual',
+    source_event_id TEXT
 );
 
 -- ── care_circles: 어르신 중심의 동의 기반 돌봄 연결망 ───────────
@@ -210,7 +211,14 @@ CREATE TABLE IF NOT EXISTS care_outbox (
     status             TEXT NOT NULL DEFAULT 'pending',
     dedupe_key         TEXT NOT NULL UNIQUE,
     created_at         TEXT DEFAULT (datetime('now','localtime')),
-    sent_at            TEXT
+    sent_at            TEXT,
+    attempt_count      INTEGER NOT NULL DEFAULT 0,
+    next_attempt_at    TEXT,
+    last_error         TEXT NOT NULL DEFAULT '',
+    claimed_at         TEXT,
+    claim_token        TEXT,
+    provider_message_id TEXT NOT NULL DEFAULT '',
+    updated_at         TEXT DEFAULT (datetime('now','localtime'))
 );
 
 -- ── care_acknowledgements: 가족 알림별 확인·연락·방문 응답 ─────
@@ -224,6 +232,44 @@ CREATE TABLE IF NOT EXISTS care_acknowledgements (
     UNIQUE(outbox_id, responder_user_id)
 );
 
+-- ── care_device_pairings: 어르신이 만든 짧은 일회용 기기 연결 코드 ─
+CREATE TABLE IF NOT EXISTS care_device_pairings (
+    pairing_id         TEXT PRIMARY KEY,
+    senior_user_id     TEXT NOT NULL,
+    code_hash          TEXT NOT NULL UNIQUE,
+    device_type        TEXT NOT NULL,
+    label              TEXT NOT NULL DEFAULT '',
+    expires_at         TEXT NOT NULL,
+    status             TEXT NOT NULL DEFAULT 'active',
+    used_at            TEXT,
+    created_at         TEXT DEFAULT (datetime('now','localtime'))
+);
+
+-- ── care_devices: 평문 토큰을 저장하지 않는 휴대폰·웨어러블 연결 ──
+CREATE TABLE IF NOT EXISTS care_devices (
+    device_id          TEXT PRIMARY KEY,
+    senior_user_id     TEXT NOT NULL,
+    token_hash         TEXT NOT NULL UNIQUE,
+    device_type        TEXT NOT NULL,
+    label              TEXT NOT NULL DEFAULT '',
+    status             TEXT NOT NULL DEFAULT 'active',
+    paired_at          TEXT NOT NULL,
+    last_seen_at       TEXT,
+    revoked_at         TEXT
+);
+
+-- ── device_health_events: 기기 재전송 중복 방지와 수취 감사 ─────
+CREATE TABLE IF NOT EXISTS device_health_events (
+    event_id           TEXT PRIMARY KEY,
+    device_id          TEXT NOT NULL,
+    senior_user_id     TEXT NOT NULL,
+    data_type          TEXT NOT NULL,
+    value              REAL NOT NULL,
+    occurred_at        TEXT NOT NULL,
+    health_log_id      INTEGER,
+    received_at        TEXT DEFAULT (datetime('now','localtime'))
+);
+
 CREATE INDEX IF NOT EXISTS idx_care_memberships_account
     ON care_memberships(account_user_id, status);
 CREATE INDEX IF NOT EXISTS idx_phone_activity_user_time
@@ -232,6 +278,10 @@ CREATE INDEX IF NOT EXISTS idx_care_outbox_pending
     ON care_outbox(status, due_at);
 CREATE INDEX IF NOT EXISTS idx_care_ack_senior
     ON care_acknowledgements(senior_user_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_care_devices_senior
+    ON care_devices(senior_user_id, status);
+CREATE INDEX IF NOT EXISTS idx_device_health_senior_time
+    ON device_health_events(senior_user_id, occurred_at DESC);
 """
 
 
@@ -258,6 +308,47 @@ def ensure_schema(db_path: str = DB_PATH) -> None:
             conn.execute("ALTER TABLE health_logs ADD COLUMN source TEXT DEFAULT 'manual'")
         except sqlite3.OperationalError:
             pass  # 이미 존재
+        try:
+            conn.execute("ALTER TABLE health_logs ADD COLUMN source_event_id TEXT")
+        except sqlite3.OperationalError:
+            pass  # 이미 존재
+        conn.execute(
+            """CREATE UNIQUE INDEX IF NOT EXISTS idx_health_logs_source_event
+               ON health_logs(source_event_id)
+               WHERE source_event_id IS NOT NULL"""
+        )
+        # 마이그레이션: 기존 care_outbox를 전달 lease·재시도 구조로 확장한다.
+        outbox_columns = {
+            "attempt_count": "INTEGER NOT NULL DEFAULT 0",
+            "next_attempt_at": "TEXT",
+            "last_error": "TEXT NOT NULL DEFAULT ''",
+            "claimed_at": "TEXT",
+            "claim_token": "TEXT",
+            "provider_message_id": "TEXT NOT NULL DEFAULT ''",
+            "updated_at": "TEXT",
+        }
+        existing_outbox_columns = {
+            row[1] for row in conn.execute("PRAGMA table_info(care_outbox)").fetchall()
+        }
+        for column, definition in outbox_columns.items():
+            if column not in existing_outbox_columns:
+                conn.execute(f"ALTER TABLE care_outbox ADD COLUMN {column} {definition}")
+        conn.execute(
+            "UPDATE care_outbox SET updated_at = COALESCE(updated_at, created_at)"
+        )
+        current_index_columns = [
+            row[2]
+            for row in conn.execute(
+                "PRAGMA index_info('idx_care_outbox_pending')"
+            ).fetchall()
+        ]
+        desired_index_columns = ["status", "next_attempt_at", "due_at"]
+        if current_index_columns != desired_index_columns:
+            conn.execute("DROP INDEX IF EXISTS idx_care_outbox_pending")
+            conn.execute(
+                """CREATE INDEX idx_care_outbox_pending
+                   ON care_outbox(status, next_attempt_at, due_at)"""
+            )
         conn.commit()
     finally:
         conn.close()

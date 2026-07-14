@@ -262,7 +262,8 @@ def log_health_data(
     value: float,
     nickname: Optional[str] = None,
     db_path: Optional[str] = None,
-    source: str = "manual"
+    source: str = "manual",
+    source_event_id: str = "",
 ) -> Dict[str, Any]:
     """
     건강 데이터를 DB에 기록하고 정상 범위를 판정한다.
@@ -355,16 +356,45 @@ def log_health_data(
     is_normal = 1 if status in ("normal", "recorded") else 0
     if source not in ("manual", "device", "ocr"):
         source = "manual"
-    cursor.execute(
-        """INSERT INTO health_logs (user_id, data_type, value, normal_range, source)
-           VALUES (?, ?, ?, ?, ?)""",
-        (user_id, data_type, str(value), is_normal, source)
-    )
-    log_id = cursor.lastrowid
+    safe_source_event_id = str(source_event_id or "").strip()
+    if len(safe_source_event_id) > 220:
+        conn.close()
+        return {"error": "source_event_id는 220자 이하여야 합니다."}
+    if source != "device":
+        safe_source_event_id = ""
+    inserted = True
+    try:
+        cursor.execute(
+            """INSERT INTO health_logs
+               (user_id, data_type, value, normal_range, source, source_event_id)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (
+                user_id,
+                data_type,
+                str(value),
+                is_normal,
+                source,
+                safe_source_event_id or None,
+            ),
+        )
+        log_id = cursor.lastrowid
+    except sqlite3.IntegrityError:
+        if not safe_source_event_id:
+            conn.close()
+            raise
+        existing = cursor.execute(
+            "SELECT id FROM health_logs WHERE source_event_id = ?",
+            (safe_source_event_id,),
+        ).fetchone()
+        if existing is None:
+            conn.close()
+            raise
+        log_id = int(existing[0])
+        inserted = False
 
     # danger 수치는 가족 리포트/Widget B용 로컬 플래그로 남긴다.
     # 외부 메시지 발송이나 보호자 자동 통보는 수행하지 않는다.
-    if status == "danger":
+    if status == "danger" and inserted:
         cursor.execute(
             """INSERT INTO alerts (user_id, risk_level, keywords, action_taken)
                VALUES (?, 'red', ?, ?)""",
@@ -421,6 +451,7 @@ def log_health_data(
         "trend_alert": trend_alert,
         "log_id": log_id,
         "source": source,
+        "duplicate_ignored": not inserted,
         "recorded_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "medical_notice": "이 기록과 자동 분류는 진단이 아닙니다. 증상이나 개인별 목표치는 의료진 판단을 우선하세요.",
         "measurement_context": MEASUREMENT_CONTEXT.get(data_type, "개인별 기준과 측정 상황을 함께 확인하세요."),

@@ -6,7 +6,10 @@ ENV PYTHONUNBUFFERED=1 \
     MCP_HOST=0.0.0.0 \
     CARETALK_DB_PATH=/app/db/caretalk.db \
     MOCK_MODE=true \
-    LIVE_API_ENABLED=false
+    LIVE_API_ENABLED=false \
+    CARE_WORKER_ENABLED=true \
+    CARE_WORKER_INTERVAL_SECONDS=30 \
+    CARETALK_DELIVERY_MODE=outbox
 
 WORKDIR /app
 
