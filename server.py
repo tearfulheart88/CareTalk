@@ -11,6 +11,7 @@ from typing import Any, Dict, Literal, Optional
 
 from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp.exceptions import ToolError
+from mcp.server.transport_security import TransportSecuritySettings
 from mcp.types import ToolAnnotations
 from starlette.requests import Request
 from starlette.responses import JSONResponse
@@ -123,6 +124,46 @@ def _env_port() -> int:
     except (TypeError, ValueError):
         return 9000
     return port if 1 <= port <= 65535 else 9000
+
+
+def _csv_env(name: str) -> list[str]:
+    return [item.strip() for item in os.environ.get(name, "").split(",") if item.strip()]
+
+
+def _transport_security() -> TransportSecuritySettings:
+    endpoint_host = os.environ.get(
+        "PLAYMCP_ENDPOINT_HOST",
+        "caretalk-mcp.playmcp-endpoint.kakaocloud.io",
+    ).strip()
+    allowed_hosts = [
+        "127.0.0.1",
+        "127.0.0.1:*",
+        "localhost",
+        "localhost:*",
+        "[::1]",
+        "[::1]:*",
+        "caretalk-mcp",
+        "caretalk-mcp:*",
+    ]
+    allowed_origins = [
+        "http://127.0.0.1:*",
+        "http://localhost:*",
+        "http://[::1]:*",
+        "https://playmcp.kakaocloud.io",
+        "https://playmcp.kakao.com",
+    ]
+    if endpoint_host:
+        allowed_hosts.extend([endpoint_host, f"{endpoint_host}:*"])
+        allowed_origins.extend(
+            [f"https://{endpoint_host}", f"https://{endpoint_host}:*"]
+        )
+    allowed_hosts.extend(_csv_env("MCP_ALLOWED_HOSTS"))
+    allowed_origins.extend(_csv_env("MCP_ALLOWED_ORIGINS"))
+    return TransportSecuritySettings(
+        enable_dns_rebinding_protection=True,
+        allowed_hosts=list(dict.fromkeys(allowed_hosts)),
+        allowed_origins=list(dict.fromkeys(allowed_origins)),
+    )
 
 
 DB_PATH = _resolve_db_path()
@@ -519,6 +560,7 @@ mcp = FastMCP(
     stateless_http=True,
     json_response=True,
     streamable_http_path="/mcp",
+    transport_security=_transport_security(),
 )
 
 

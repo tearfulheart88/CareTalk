@@ -66,6 +66,13 @@ routine_actions = routine_schema["properties"]["action"]["enum"]
 test("care_routine 기기 연결 action 공개", all(action in routine_actions for action in ["create_device_pairing", "list_devices", "revoke_device"]), str(routine_actions))
 registered_tools = asyncio.run(server.mcp.list_tools())
 test("공식 FastMCP Tool 12개 등록", len(registered_tools) == 12, str([t.name for t in registered_tools]))
+transport_security = server.mcp.settings.transport_security
+test("MCP DNS rebinding 보호 활성", transport_security is not None and transport_security.enable_dns_rebinding_protection is True)
+test(
+    "PlayMCP 공개 Host 허용",
+    transport_security is not None
+    and "caretalk-mcp.playmcp-endpoint.kakaocloud.io" in transport_security.allowed_hosts,
+)
 for registered in registered_tools:
     annotations = registered.annotations
     test(f"{registered.name} annotations 있음", annotations is not None)
