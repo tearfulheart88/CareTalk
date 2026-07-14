@@ -130,6 +130,108 @@ CREATE TABLE IF NOT EXISTS health_logs (
     normal_range INTEGER DEFAULT 1,
     source       TEXT DEFAULT 'manual'
 );
+
+-- ── care_circles: 어르신 중심의 동의 기반 돌봄 연결망 ───────────
+CREATE TABLE IF NOT EXISTS care_circles (
+    circle_id          TEXT PRIMARY KEY,
+    senior_user_id     TEXT NOT NULL UNIQUE,
+    display_name       TEXT NOT NULL DEFAULT '우리 가족 돌봄',
+    senior_consented   INTEGER NOT NULL DEFAULT 0,
+    consented_at       TEXT,
+    created_at         TEXT DEFAULT (datetime('now','localtime'))
+);
+
+-- ── care_memberships: 가족·복지사 계정별 권한 ──────────────────
+CREATE TABLE IF NOT EXISTS care_memberships (
+    id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+    circle_id          TEXT NOT NULL,
+    account_user_id    TEXT NOT NULL,
+    nickname           TEXT NOT NULL DEFAULT '',
+    role               TEXT NOT NULL DEFAULT 'family',
+    permissions        TEXT NOT NULL DEFAULT '[]',
+    status             TEXT NOT NULL DEFAULT 'active',
+    joined_at          TEXT DEFAULT (datetime('now','localtime')),
+    updated_at         TEXT DEFAULT (datetime('now','localtime')),
+    UNIQUE(circle_id, account_user_id)
+);
+
+-- ── care_invites: 평문을 저장하지 않는 일회용 연결 초대 ─────────
+CREATE TABLE IF NOT EXISTS care_invites (
+    invite_id          TEXT PRIMARY KEY,
+    circle_id          TEXT NOT NULL,
+    token_hash         TEXT NOT NULL UNIQUE,
+    role               TEXT NOT NULL DEFAULT 'family',
+    permissions        TEXT NOT NULL DEFAULT '[]',
+    expires_at         TEXT NOT NULL,
+    used_by            TEXT,
+    used_at            TEXT,
+    status             TEXT NOT NULL DEFAULT 'active',
+    created_at         TEXT DEFAULT (datetime('now','localtime'))
+);
+
+-- ── care_routines: 예약 안부·가족 요약·활동 부재 기준 ───────────
+CREATE TABLE IF NOT EXISTS care_routines (
+    senior_user_id             TEXT PRIMARY KEY,
+    timezone                   TEXT NOT NULL DEFAULT 'Asia/Seoul',
+    prompt_times               TEXT NOT NULL DEFAULT '["09:00","14:00","20:00"]',
+    digest_times               TEXT NOT NULL DEFAULT '["14:30","21:00"]',
+    response_window_minutes    INTEGER NOT NULL DEFAULT 60,
+    inactivity_hours           INTEGER NOT NULL DEFAULT 8,
+    escalation_hours           INTEGER NOT NULL DEFAULT 12,
+    inactivity_grace_minutes   INTEGER NOT NULL DEFAULT 30,
+    inactivity_mode            TEXT NOT NULL DEFAULT 'both',
+    quiet_start                TEXT NOT NULL DEFAULT '22:00',
+    quiet_end                  TEXT NOT NULL DEFAULT '07:00',
+    phone_activity_enabled     INTEGER NOT NULL DEFAULT 1,
+    wearable_enabled           INTEGER NOT NULL DEFAULT 0,
+    senior_consented           INTEGER NOT NULL DEFAULT 0,
+    updated_at                 TEXT DEFAULT (datetime('now','localtime'))
+);
+
+-- ── phone_activity_events: 위치·내용 없이 마지막 활동 시각만 저장 ─
+CREATE TABLE IF NOT EXISTS phone_activity_events (
+    event_id           TEXT PRIMARY KEY,
+    senior_user_id     TEXT NOT NULL,
+    event_type         TEXT NOT NULL,
+    source             TEXT NOT NULL DEFAULT 'phone',
+    occurred_at        TEXT NOT NULL,
+    received_at        TEXT DEFAULT (datetime('now','localtime'))
+);
+
+-- ── care_outbox: 외부 알림 어댑터가 전달할 중복 방지 대기열 ─────
+CREATE TABLE IF NOT EXISTS care_outbox (
+    id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+    senior_user_id     TEXT NOT NULL,
+    recipient_user_id  TEXT NOT NULL,
+    event_type         TEXT NOT NULL,
+    severity           TEXT NOT NULL DEFAULT 'info',
+    payload_json       TEXT NOT NULL DEFAULT '{}',
+    due_at             TEXT NOT NULL,
+    status             TEXT NOT NULL DEFAULT 'pending',
+    dedupe_key         TEXT NOT NULL UNIQUE,
+    created_at         TEXT DEFAULT (datetime('now','localtime')),
+    sent_at            TEXT
+);
+
+-- ── care_acknowledgements: 가족 알림별 확인·연락·방문 응답 ─────
+CREATE TABLE IF NOT EXISTS care_acknowledgements (
+    id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+    outbox_id          INTEGER NOT NULL,
+    senior_user_id     TEXT NOT NULL,
+    responder_user_id  TEXT NOT NULL,
+    response           TEXT NOT NULL,
+    created_at         TEXT DEFAULT (datetime('now','localtime')),
+    UNIQUE(outbox_id, responder_user_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_care_memberships_account
+    ON care_memberships(account_user_id, status);
+CREATE INDEX IF NOT EXISTS idx_phone_activity_user_time
+    ON phone_activity_events(senior_user_id, occurred_at DESC);
+CREATE INDEX IF NOT EXISTS idx_care_outbox_pending
+    ON care_outbox(status, due_at);
+CREATE INDEX IF NOT EXISTS idx_care_ack_senior
+    ON care_acknowledgements(senior_user_id, created_at DESC);
 """
 
 

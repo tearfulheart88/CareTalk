@@ -5,7 +5,9 @@
 서버의 execute_tool 함수를 직접 import하여 모든 tool을 검증한다.
 DB 충돌을 피하기 위해 임시 DB 경로를 사용한다.
 """
-import asyncio, os, sys, json, tempfile, shutil
+import asyncio, os, sys, json, tempfile, shutil, sqlite3
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
 # Windows 기본 콘솔(cp949)에서도 이모지/한글 테스트 로그가 깨지지 않게 한다.
 try:
@@ -52,15 +54,15 @@ print("=" * 60)
 # === 1. initialize / tools/list ===
 print("\n[1] 서버 정보")
 from server import TOOL_DEFINITIONS
-test("Tool 개수 10개", len(TOOL_DEFINITIONS) == 10, f"got {len(TOOL_DEFINITIONS)}")
+test("Tool 개수 12개", len(TOOL_DEFINITIONS) == 12, f"got {len(TOOL_DEFINITIONS)}")
 tool_names = [t["name"] for t in TOOL_DEFINITIONS]
 test("필수 Tool 포함", all(n in tool_names for n in [
-    "care_guide", "daily_checkin", "emergency_detect", "family_report",
+    "care_guide", "care_circle", "care_routine", "daily_checkin", "emergency_detect", "family_report",
     "daily_care_widget", "health_log", "reminiscence_chat", "family_report_widget",
     "health_facility", "build_care_safety_plan"
 ]), f"got {tool_names}")
 registered_tools = asyncio.run(server.mcp.list_tools())
-test("공식 FastMCP Tool 10개 등록", len(registered_tools) == 10, str([t.name for t in registered_tools]))
+test("공식 FastMCP Tool 12개 등록", len(registered_tools) == 12, str([t.name for t in registered_tools]))
 for registered in registered_tools:
     annotations = registered.annotations
     test(f"{registered.name} annotations 있음", annotations is not None)
@@ -90,9 +92,250 @@ test("guide Kakao message_json", len(r.get("message_json",{}).get("template",{})
 
 r = execute_tool("care_guide", {"action":"faq","question":"119에 자동 신고하나요?"})
 test("guide 질문별 FAQ", bool(r.get("kakao_cards")) and "자동" in r["kakao_cards"][0].get("description", ""), str(r)[:160])
+r = execute_tool("care_guide", {"action":"faq","question":"웨어러블을 꼭 차야 하나요?"})
+test("guide 웨어러블은 선택 기능", bool(r.get("kakao_cards")) and "웨어러블 없이도" in r["kakao_cards"][0].get("description", ""), str(r)[:180])
 
 r = execute_tool("care_guide", {"action":"accessibility"})
 test("guide 접근성 안내", r.get("accessibility",{}).get("large_text_recommended") is True, str(r)[:120])
+
+# === 2-1. care_circle + care_routine ===
+print("\n[2-1] 가족 연결망 + 예약 돌봄 + 휴대폰 활동")
+circle_senior = "senior_circle_001"
+circle_family = "family_circle_001"
+
+r = execute_tool("care_circle", {
+    "action":"create_invite", "requester_user_id":circle_senior,
+    "senior_user_id":circle_senior, "nickname":"순자", "senior_consented":False,
+})
+test("가족 연결은 어르신 동의 필수", "error" in r, str(r)[:140])
+
+invite = execute_tool("care_circle", {
+    "action":"create_invite", "requester_user_id":circle_senior,
+    "senior_user_id":circle_senior, "nickname":"순자", "circle_name":"순자님 돌봄",
+    "senior_consented":True,
+})
+invite_code = invite.get("invite_code", "")
+test("일회용 가족 초대 생성", invite.get("status") == "invite_created" and len(invite_code) >= 10, str(invite)[:180])
+test("초대코드 평문 미저장 명시", invite.get("one_time_secret") is True and invite.get("stored_in_plaintext") is False, str(invite)[:160])
+
+conn = sqlite3.connect(DB_PATH)
+stored_hash = conn.execute("SELECT token_hash FROM care_invites LIMIT 1").fetchone()[0]
+conn.close()
+test("DB에 초대코드 해시만 저장", invite_code not in stored_hash and len(stored_hash) == 64, stored_hash)
+
+r = execute_tool("care_circle", {
+    "action":"join", "requester_user_id":circle_family,
+    "invite_code":"WRONG-CODE", "nickname":"딸",
+})
+test("잘못된 초대코드 거절", "error" in r, str(r)[:120])
+
+joined = execute_tool("care_circle", {
+    "action":"join", "requester_user_id":circle_family,
+    "invite_code":invite_code, "nickname":"딸",
+})
+test("지정 가족 계정 연결", joined.get("status") == "connected", str(joined)[:160])
+test("가족 기본 권한 최소 부여", "view_summary" in joined.get("permissions",[]) and "manage_schedule" not in joined.get("permissions",[]), str(joined)[:160])
+
+r = execute_tool("care_circle", {
+    "action":"join", "requester_user_id":"another_family",
+    "invite_code":invite_code, "nickname":"아들",
+})
+test("초대코드 재사용 차단", "error" in r, str(r)[:120])
+
+circle = execute_tool("care_circle", {
+    "action":"list", "requester_user_id":circle_family,
+    "senior_user_id":circle_senior,
+})
+test("연결 가족 목록 조회", circle.get("connected_family_count") == 1 and circle.get("requester_role") == "family", str(circle)[:180])
+test("목록에서 계정 ID 마스킹", all("account_hint" in m and "account_user_id" not in m for m in circle.get("members",[])), str(circle)[:180])
+
+r = execute_tool("care_circle", {
+    "action":"list", "requester_user_id":"stranger",
+    "senior_user_id":circle_senior,
+})
+test("미연결 계정 조회 차단", "error" in r, str(r)[:120])
+
+r = execute_tool("care_circle", {
+    "action":"update_permissions", "requester_user_id":circle_family,
+    "senior_user_id":circle_senior, "target_user_id":circle_family,
+    "permissions":"view_summary,manage_schedule",
+})
+test("가족의 자기 권한 상승 차단", "error" in r, str(r)[:120])
+
+r = execute_tool("care_routine", {
+    "action":"configure", "requester_user_id":circle_senior,
+    "senior_user_id":circle_senior, "senior_consented":False,
+})
+test("예약·활동 확인도 별도 동의 필수", "error" in r, str(r)[:120])
+
+demo_now = datetime.now(ZoneInfo("Asia/Seoul")).replace(second=0, microsecond=0)
+demo_slot = demo_now.strftime("%H:%M")
+configured = execute_tool("care_routine", {
+    "action":"configure", "requester_user_id":circle_senior,
+    "senior_user_id":circle_senior, "prompt_times":demo_slot,
+    "digest_times":demo_slot, "inactivity_hours":8, "escalation_hours":12,
+    "inactivity_grace_minutes":30, "quiet_start":"00:00", "quiet_end":"00:00",
+    "senior_consented":True,
+})
+test("예약 질문·가족 요약 설정", configured.get("status") == "configured" and configured.get("settings",{}).get("prompt_times") == [demo_slot], str(configured)[:180])
+test("위치·화면·원시센서 미수집", all(configured.get("privacy",{}).get(k) is False for k in ["exact_location_collected","screen_content_collected","raw_motion_collected"]), str(configured)[:180])
+
+r = execute_tool("care_routine", {
+    "action":"configure", "requester_user_id":circle_senior,
+    "senior_user_id":circle_senior, "prompt_times":"25:00", "digest_times":demo_slot,
+    "senior_consented":True,
+})
+test("잘못된 예약 시각 차단", "error" in r, str(r)[:120])
+from tools.care_routine import _time_list
+test("한 자리 예약 시각을 HH:MM으로 정규화", _time_list("9:05", minimum=1, maximum=6, field="prompt_times") == ["09:05"])
+
+r = execute_tool("care_routine", {
+    "action":"record_activity", "requester_user_id":circle_family,
+    "senior_user_id":circle_senior, "event_type":"screen_unlock",
+})
+test("가족의 휴대폰 활동 위조 차단", "error" in r, str(r)[:120])
+
+past_activity = (demo_now - timedelta(hours=9)).isoformat()
+screen = execute_tool("care_routine", {
+    "action":"record_activity", "requester_user_id":circle_senior,
+    "senior_user_id":circle_senior, "event_type":"screen_unlock",
+    "source":"demo", "occurred_at":past_activity, "event_id":"screen-event-1",
+})
+motion = execute_tool("care_routine", {
+    "action":"record_activity", "requester_user_id":circle_senior,
+    "senior_user_id":circle_senior, "event_type":"device_motion",
+    "source":"demo", "occurred_at":past_activity, "event_id":"motion-event-1",
+})
+test("화면 사용·휴대폰 이동 시각 기록", screen.get("status") == "recorded" and motion.get("status") == "recorded", str((screen,motion))[:180])
+test("활동 이벤트에 위치·원시센서 없음", screen.get("exact_location_collected") is False and motion.get("raw_sensor_data_collected") is False, str((screen,motion))[:160])
+
+duplicate = execute_tool("care_routine", {
+    "action":"record_activity", "requester_user_id":circle_senior,
+    "senior_user_id":circle_senior, "event_type":"screen_unlock",
+    "source":"demo", "occurred_at":past_activity, "event_id":"screen-event-1",
+})
+test("활동 이벤트 중복 수집 방지", duplicate.get("status") == "duplicate_ignored", str(duplicate)[:120])
+
+first_tick = execute_tool("care_routine", {
+    "action":"run_due", "requester_user_id":circle_senior,
+    "senior_user_id":circle_senior, "now":demo_now.isoformat(),
+})
+first_types = [event.get("event_type") for event in first_tick.get("queued_events",[])]
+test("예약 안부 질문 대기열 생성", "scheduled_checkin" in first_types, str(first_tick)[:220])
+test("권한 있는 가족 요약 대기열 생성", "family_digest" in first_types, str(first_tick)[:220])
+test("활동 부재 시 어르신 먼저 확인", first_tick.get("inactivity_status") == "senior_confirmation_queued" and "activity_check" in first_types, str(first_tick)[:220])
+test("도구가 실제 메시지 발송으로 오인시키지 않음", first_tick.get("delivery_performed") is False and first_tick.get("delivery_mode") == "persistent_outbox", str(first_tick)[:180])
+
+same_tick = execute_tool("care_routine", {
+    "action":"run_due", "requester_user_id":circle_senior,
+    "senior_user_id":circle_senior, "now":demo_now.isoformat(),
+})
+test("같은 예약 실행 중복 생성 방지", same_tick.get("queued_count") == 0 and same_tick.get("inactivity_status") == "awaiting_senior_confirmation", str(same_tick)[:180])
+
+later_tick = execute_tool("care_routine", {
+    "action":"run_due", "requester_user_id":circle_senior,
+    "senior_user_id":circle_senior, "now":(demo_now + timedelta(minutes=31)).isoformat(),
+})
+later_types = [event.get("event_type") for event in later_tick.get("queued_events",[])]
+test("유예시간 후 가족 활동 부재 안내", later_tick.get("inactivity_status") == "family_notice_queued" and later_types == ["inactivity_notice"], str(later_tick)[:220])
+test("활동 부재를 응급 확정으로 표현하지 않음", "응급 상황으로 확정된 것은 아닙니다" in later_tick.get("queued_events",[{}])[0].get("preview",""), str(later_tick)[:220])
+
+status = execute_tool("care_routine", {
+    "action":"status", "requester_user_id":circle_family,
+    "senior_user_id":circle_senior, "now":(demo_now + timedelta(minutes=31)).isoformat(),
+})
+test("가족용 상태에 요약·활동만 제공", status.get("status") == "active" and "user_message" not in status.get("today_summary",{}), str(status)[:220])
+test("가족 상태에도 원문·정확한 위치 없음", status.get("privacy",{}).get("family_receives_raw_chat") is False and status.get("privacy",{}).get("exact_location_collected") is False, str(status)[:180])
+test("중간 요약이 당일 질문·응답 수를 집계", status.get("today_summary",{}).get("scheduled_count") == 1 and status.get("today_summary",{}).get("responded_count") == 0 and status.get("today_summary",{}).get("raw_messages_shared") is False, str(status.get("today_summary"))[:220])
+
+late_old_signal = execute_tool("care_routine", {
+    "action":"record_activity", "requester_user_id":circle_senior,
+    "senior_user_id":circle_senior, "event_type":"app_open",
+    "source":"demo", "occurred_at":past_activity, "event_id":"late-old-event",
+})
+status_after_late_signal = execute_tool("care_routine", {
+    "action":"status", "requester_user_id":circle_family,
+    "senior_user_id":circle_senior,
+})
+test("늦게 도착한 과거 신호는 현재 알림을 취소하지 않음", late_old_signal.get("status") == "recorded" and any(item.get("event_type") == "inactivity_notice" for item in status_after_late_signal.get("pending_notifications",[])), str(status_after_late_signal)[:220])
+
+notice_id = later_tick.get("queued_events",[{}])[0].get("outbox_id", 0)
+ack = execute_tool("care_routine", {
+    "action":"acknowledge", "requester_user_id":circle_family,
+    "senior_user_id":circle_senior, "outbox_id":notice_id,
+    "response":"전화해볼게요",
+})
+test("가족의 전화 확인 응답 수취", ack.get("status") == "acknowledged" and ack.get("response") == "calling", str(ack)[:160])
+status_after_ack = execute_tool("care_routine", {
+    "action":"status", "requester_user_id":circle_family,
+    "senior_user_id":circle_senior,
+})
+test("가족 후속 행동을 연결망에 기록", any(item.get("response") == "calling" for item in status_after_ack.get("recent_family_actions",[])), str(status_after_ack)[:220])
+test("확인한 가족 알림은 대기 목록에서 제거", not any(item.get("event_type") == "inactivity_notice" for item in status_after_ack.get("pending_notifications",[])), str(status_after_ack)[:220])
+
+# 안부 응답은 휴대폰 상호작용으로 간주되어 아직 발송되지 않은 활동 부재 안내를 취소한다.
+execute_tool("daily_checkin", {"user_id":circle_senior,"action":"analyze","message":"저는 괜찮아요"})
+execute_tool("daily_checkin", {"user_id":circle_senior,"action":"initiate","nickname":"순자"})
+status_after_reply = execute_tool("care_routine", {
+    "action":"status", "requester_user_id":circle_family,
+    "senior_user_id":circle_senior,
+})
+pending_types = [item.get("event_type") for item in status_after_reply.get("pending_notifications",[])]
+test("안부 응답 시 활동 부재 대기 알림 취소", "activity_check" not in pending_types and "inactivity_notice" not in pending_types, str(status_after_reply)[:220])
+test("새 미응답이 있어도 앞선 응답을 하루 요약에 유지", status_after_reply.get("today_summary",{}).get("scheduled_count") == 2 and status_after_reply.get("today_summary",{}).get("responded_count") == 1 and status_after_reply.get("today_summary",{}).get("status") == "partial", str(status_after_reply.get("today_summary"))[:220])
+
+schedule_grant = execute_tool("care_circle", {
+    "action":"update_permissions", "requester_user_id":circle_senior,
+    "senior_user_id":circle_senior, "target_user_id":circle_family,
+    "permissions":"view_summary,receive_inactivity_alerts,receive_emergency_alerts,manage_schedule",
+})
+test("어르신이 가족에게 일정 관리 권한 부여", schedule_grant.get("status") == "permissions_updated" and "manage_schedule" in schedule_grant.get("permissions",[]), str(schedule_grant)[:160])
+family_schedule_update = execute_tool("care_routine", {
+    "action":"configure", "requester_user_id":circle_family,
+    "senior_user_id":circle_senior, "prompt_times":demo_slot,
+    "digest_times":demo_slot, "inactivity_hours":2, "escalation_hours":3,
+    "phone_activity_enabled":False, "wearable_enabled":True,
+})
+family_settings = family_schedule_update.get("settings", {})
+test("가족 일정 권한은 활동·웨어러블 동의 설정을 바꾸지 않음", family_schedule_update.get("status") == "configured" and family_settings.get("inactivity_hours") == 8 and family_settings.get("phone_activity_enabled") is True and family_settings.get("wearable_enabled") is False, str(family_schedule_update)[:220])
+
+r = execute_tool("care_routine", {
+    "action":"pause", "requester_user_id":circle_family,
+    "senior_user_id":circle_senior,
+})
+test("가족이 어르신 대신 활동 확인 동의를 철회하지 못함", "error" in r, str(r)[:120])
+r = execute_tool("care_routine", {
+    "action":"pause", "requester_user_id":circle_senior,
+    "senior_user_id":circle_senior,
+})
+test("어르신이 예약·활동 확인 즉시 중지", r.get("status") == "paused" and r.get("senior_consented") is False and r.get("phone_activity_enabled") is False, str(r)[:180])
+paused_status = execute_tool("care_routine", {
+    "action":"status", "requester_user_id":circle_senior,
+    "senior_user_id":circle_senior,
+})
+test("중지 상태 조회도 paused·disabled로 표시", paused_status.get("status") == "paused" and paused_status.get("activity_state") == "disabled", str(paused_status)[:180])
+r = execute_tool("care_routine", {
+    "action":"run_due", "requester_user_id":circle_senior,
+    "senior_user_id":circle_senior, "now":demo_now.isoformat(),
+})
+test("중지 후 예약 실행 차단", "error" in r and "중지" in r.get("error",""), str(r)[:140])
+r = execute_tool("care_routine", {
+    "action":"configure", "requester_user_id":circle_family,
+    "senior_user_id":circle_senior, "prompt_times":demo_slot,
+    "digest_times":demo_slot, "senior_consented":True,
+})
+test("일정 권한이 있어도 가족이 철회된 동의를 다시 켜지 못함", "error" in r and "어르신" in r.get("error",""), str(r)[:160])
+
+r = execute_tool("care_circle", {
+    "action":"revoke", "requester_user_id":circle_senior,
+    "senior_user_id":circle_senior, "target_user_id":circle_family,
+})
+test("어르신이 가족 연결 즉시 해제", r.get("status") == "revoked" and r.get("pending_notifications_cancelled") is True, str(r)[:140])
+r = execute_tool("care_routine", {
+    "action":"status", "requester_user_id":circle_family,
+    "senior_user_id":circle_senior,
+})
+test("연결 해제 후 가족 조회 차단", "error" in r, str(r)[:120])
 
 # === 3. daily_checkin ===
 print("\n[2] daily_checkin")

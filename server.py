@@ -146,6 +146,8 @@ def _get_mock_weather():
 
 TOOL_DEFINITIONS = [
     {"name": "care_guide", "description": "첫 사용 목적·사용법·추천 답변·접근성·FAQ·개인정보 안내. action: start, examples, faq, accessibility, privacy", "inputSchema": {"type": "object", "properties": {"action": {"type": "string", "enum": ["start", "examples", "faq", "accessibility", "privacy"]}, "question": {"type": "string"}, "audience": {"type": "string", "enum": ["senior", "family", "helper"]}}}},
+    {"name": "care_circle", "description": "어르신 동의 기반 가족 계정 연결·권한·해제. action: create_invite, join, list, update_permissions, revoke", "inputSchema": {"type": "object", "properties": {"action": {"type": "string", "enum": ["create_invite", "join", "list", "update_permissions", "revoke"]}, "requester_user_id": {"type": "string"}, "senior_user_id": {"type": "string"}, "nickname": {"type": "string"}, "invite_code": {"type": "string"}, "role": {"type": "string", "enum": ["family", "guardian", "helper"]}, "permissions": {"type": "string", "description": "쉼표 구분: view_summary, receive_inactivity_alerts, receive_emergency_alerts, manage_schedule"}, "target_user_id": {"type": "string"}, "circle_name": {"type": "string"}, "senior_consented": {"type": "boolean"}, "invite_hours": {"type": "integer", "minimum": 1, "maximum": 72}}, "required": ["action", "requester_user_id"]}},
+    {"name": "care_routine", "description": "예약 안부·가족 요약·휴대폰 활동 부재 확인·가족 응답·동의 철회 대기열. action: configure, record_activity, run_due, acknowledge, status, pause", "inputSchema": {"type": "object", "properties": {"action": {"type": "string", "enum": ["configure", "record_activity", "run_due", "acknowledge", "status", "pause"]}, "requester_user_id": {"type": "string"}, "senior_user_id": {"type": "string"}, "prompt_times": {"type": "string", "description": "쉼표로 구분한 HH:MM"}, "digest_times": {"type": "string", "description": "쉼표로 구분한 HH:MM"}, "timezone_name": {"type": "string"}, "response_window_minutes": {"type": "integer"}, "inactivity_hours": {"type": "integer"}, "escalation_hours": {"type": "integer"}, "inactivity_grace_minutes": {"type": "integer"}, "inactivity_mode": {"type": "string", "enum": ["both", "either"]}, "quiet_start": {"type": "string"}, "quiet_end": {"type": "string"}, "phone_activity_enabled": {"type": "boolean"}, "wearable_enabled": {"type": "boolean"}, "senior_consented": {"type": "boolean"}, "event_type": {"type": "string", "enum": ["screen_unlock", "app_open", "manual_confirm", "device_motion", "wearable_sync"]}, "source": {"type": "string", "enum": ["phone", "wearable", "manual", "demo"]}, "occurred_at": {"type": "string"}, "event_id": {"type": "string"}, "now": {"type": "string"}, "outbox_id": {"type": "integer"}, "response": {"type": "string", "enum": ["확인했어요", "전화해볼게요", "방문 확인할게요", "해결됐어요", "도움이 더 필요해요"]}}, "required": ["action", "requester_user_id", "senior_user_id"]}},
     {"name": "daily_checkin", "description": "매일 안부 확인. action: initiate(안부 메시지 생성), analyze(응답 감정 분석), no_response(무응답 확인)", "inputSchema": {"type": "object", "properties": {"user_id": {"type": "string"}, "action": {"type": "string", "enum": ["initiate", "analyze", "no_response"]}, "message": {"type": "string"}, "nickname": {"type": "string"}}, "required": ["user_id"]}},
     {"name": "emergency_detect", "description": "위험 신호 실시간 감지. action: detect(메시지 위험 판정), silence(무응답 경보)", "inputSchema": {"type": "object", "properties": {"user_id": {"type": "string"}, "message": {"type": "string"}, "action": {"type": "string", "enum": ["detect", "silence"]}}, "required": ["user_id"]}},
     {"name": "family_report", "description": "가족용 주간/일일 돌봄 리포트 생성. report_type: weekly(주간), daily(일일)", "inputSchema": {"type": "object", "properties": {"senior_user_id": {"type": "string"}, "report_type": {"type": "string", "enum": ["weekly", "daily"]}}, "required": ["senior_user_id"]}},
@@ -160,6 +162,8 @@ TOOL_DEFINITIONS = [
 _TEXT_LIMITS = {
     "user_id": 128,
     "senior_user_id": 128,
+    "requester_user_id": 128,
+    "target_user_id": 128,
     "nickname": 40,
     "message": 4000,
     "region": 80,
@@ -168,6 +172,22 @@ _TEXT_LIMITS = {
     "accessibility_needs": 300,
     "question": 300,
     "audience": 20,
+    "invite_code": 128,
+    "role": 20,
+    "permissions": 200,
+    "circle_name": 60,
+    "prompt_times": 100,
+    "digest_times": 100,
+    "timezone_name": 64,
+    "inactivity_mode": 10,
+    "quiet_start": 5,
+    "quiet_end": 5,
+    "event_type": 30,
+    "source": 20,
+    "occurred_at": 64,
+    "event_id": 128,
+    "now": 64,
+    "response": 80,
 }
 
 
@@ -202,6 +222,59 @@ def execute_tool(name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
             action=arguments.get("action", "start"),
             question=arguments.get("question", ""),
             audience=arguments.get("audience", "senior"),
+        )
+    elif name == "care_circle":
+        from tools.care_circle import manage_care_circle
+        requester_user_id, error = _require_arg(arguments, "requester_user_id")
+        if error:
+            return error
+        return manage_care_circle(
+            action=arguments.get("action", "list"),
+            requester_user_id=requester_user_id,
+            senior_user_id=arguments.get("senior_user_id", ""),
+            nickname=arguments.get("nickname", ""),
+            invite_code=arguments.get("invite_code", ""),
+            role=arguments.get("role", "family"),
+            permissions=arguments.get("permissions", ""),
+            target_user_id=arguments.get("target_user_id", ""),
+            circle_name=arguments.get("circle_name", "우리 가족 돌봄"),
+            senior_consented=arguments.get("senior_consented", False),
+            invite_hours=arguments.get("invite_hours", 24),
+            db_path=DB_PATH,
+        )
+    elif name == "care_routine":
+        from tools.care_routine import manage_care_routine
+        requester_user_id, error = _require_arg(arguments, "requester_user_id")
+        if error:
+            return error
+        senior_user_id, error = _require_arg(arguments, "senior_user_id")
+        if error:
+            return error
+        return manage_care_routine(
+            action=arguments.get("action", "status"),
+            requester_user_id=requester_user_id,
+            senior_user_id=senior_user_id,
+            prompt_times=arguments.get("prompt_times", "09:00,14:00,20:00"),
+            digest_times=arguments.get("digest_times", "14:30,21:00"),
+            timezone_name=arguments.get("timezone_name", "Asia/Seoul"),
+            response_window_minutes=arguments.get("response_window_minutes", 60),
+            inactivity_hours=arguments.get("inactivity_hours", 8),
+            escalation_hours=arguments.get("escalation_hours", 12),
+            inactivity_grace_minutes=arguments.get("inactivity_grace_minutes", 30),
+            inactivity_mode=arguments.get("inactivity_mode", "both"),
+            quiet_start=arguments.get("quiet_start", "22:00"),
+            quiet_end=arguments.get("quiet_end", "07:00"),
+            phone_activity_enabled=arguments.get("phone_activity_enabled", True),
+            wearable_enabled=arguments.get("wearable_enabled", False),
+            senior_consented=arguments.get("senior_consented", False),
+            event_type=arguments.get("event_type", ""),
+            source=arguments.get("source", "phone"),
+            occurred_at=arguments.get("occurred_at", ""),
+            event_id=arguments.get("event_id", ""),
+            now=arguments.get("now", ""),
+            outbox_id=arguments.get("outbox_id", 0),
+            response=arguments.get("response", ""),
+            db_path=DB_PATH,
         )
     elif name == "daily_checkin":
         from tools.daily_checkin import initiate_checkin, analyze_checkin_response, check_no_response
@@ -370,6 +443,8 @@ mcp = FastMCP(
         "돌봄톡은 독거 어르신의 안부 확인, 건강 기록, 응급 신호 감지, "
         "추억 회상 대화와 가족 리포트를 제공하는 한국어 돌봄 MCP 서버입니다. "
         "처음 방문했거나 사용법·도움말·FAQ를 물으면 care_guide를 먼저 호출하고, "
+        "가족 계정 연결은 care_circle에서 어르신 동의와 계정별 권한을 먼저 확인하세요. "
+        "예약 질문·가족 요약·휴대폰 활동 부재 확인은 care_routine을 사용하되 위치나 화면 내용은 수집하지 마세요. "
         "안부 계획을 요청하면 build_care_safety_plan으로 당사자 동의와 사람 확인 단계를 먼저 설계하세요. "
         "응급 판정은 보조 신호이며 실제 위급 상황에서는 즉시 119에 연락해야 합니다."
     ),
@@ -412,6 +487,78 @@ def care_guide(
 ) -> Dict[str, Any]:
     """어르신·가족·돌봄 담당자에게 첫 사용 흐름과 자주 묻는 질문을 안내합니다."""
     return _tool_result("care_guide", locals())
+
+
+@mcp.tool(
+    title="Connect a Consent-Based Care Circle | 가족 돌봄 연결",
+    description=(
+        "어르신이 지정한 가족·보호자·복지사 계정을 일회용 초대로 연결하고 공유 권한을 관리할 때 호출합니다. "
+        "Creates, lists, updates, or revokes consent-based account links for CareTalk(돌봄톡); invite codes are one-time secrets."
+    ),
+    annotations=_annotations(
+        "Connect a Consent-Based Care Circle | 가족 돌봄 연결",
+        read_only=False,
+        idempotent=False,
+        open_world=False,
+    ),
+)
+def care_circle(
+    action: Literal["create_invite", "join", "list", "update_permissions", "revoke"],
+    requester_user_id: str,
+    senior_user_id: str = "",
+    nickname: str = "",
+    invite_code: str = "",
+    role: Literal["family", "guardian", "helper"] = "family",
+    permissions: str = "",
+    target_user_id: str = "",
+    circle_name: str = "우리 가족 돌봄",
+    senior_consented: bool = False,
+    invite_hours: int = 24,
+) -> Dict[str, Any]:
+    """여러 가족 계정을 동의와 최소 권한으로 연결하거나 즉시 해제합니다."""
+    return _tool_result("care_circle", locals())
+
+
+@mcp.tool(
+    title="Run Scheduled Care and Phone Activity Checks | 예약 돌봄",
+    description=(
+        "정해진 시간의 원터치 안부 질문, 가족 중간·하루 요약, 휴대폰 화면 사용·이동 부재 확인을 설정하거나 실행할 때 호출합니다. "
+        "Configures or runs scheduled check-ins, consent-limited family digests, and minimal phone-activity checks for CareTalk(돌봄톡)."
+    ),
+    annotations=_annotations(
+        "Run Scheduled Care and Phone Activity Checks | 예약 돌봄",
+        read_only=False,
+        idempotent=False,
+        open_world=False,
+    ),
+)
+def care_routine(
+    action: Literal["configure", "record_activity", "run_due", "acknowledge", "status", "pause"],
+    requester_user_id: str,
+    senior_user_id: str,
+    prompt_times: str = "09:00,14:00,20:00",
+    digest_times: str = "14:30,21:00",
+    timezone_name: str = "Asia/Seoul",
+    response_window_minutes: int = 60,
+    inactivity_hours: int = 8,
+    escalation_hours: int = 12,
+    inactivity_grace_minutes: int = 30,
+    inactivity_mode: Literal["both", "either"] = "both",
+    quiet_start: str = "22:00",
+    quiet_end: str = "07:00",
+    phone_activity_enabled: bool = True,
+    wearable_enabled: bool = False,
+    senior_consented: bool = False,
+    event_type: Literal["screen_unlock", "app_open", "manual_confirm", "device_motion", "wearable_sync", ""] = "",
+    source: Literal["phone", "wearable", "manual", "demo"] = "phone",
+    occurred_at: str = "",
+    event_id: str = "",
+    now: str = "",
+    outbox_id: int = 0,
+    response: str = "",
+) -> Dict[str, Any]:
+    """예약 메시지와 최소 활동 신호를 대기열로 연결하며 직접 발송은 수행하지 않습니다."""
+    return _tool_result("care_routine", locals())
 
 
 @mcp.tool(
@@ -605,7 +752,7 @@ def _server_info() -> Dict[str, Any]:
         mode = "rules_fallback"
     return {
         "server": "caretalk",
-        "version": "3.1.0",
+        "version": "3.2.0",
         "status": "ok",
         "mode": mode,
         "mock_mode": MOCK_MODE,

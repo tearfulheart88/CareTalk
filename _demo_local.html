@@ -114,6 +114,8 @@
     <b>⑦ ✅ 판정 개선 확인</b><span>오탐/과소판정 수정 검증 (7/2)</span></button>
   <button class="step" onclick="step8()">
     <b>⑧ 🏥 무료 건강 서비스 안내</b><span>health_facility · 기기연동 입력→보건소 추천→알림</span></button>
+  <button class="step" onclick="step9()">
+    <b>⑨ 가족 연결·예약 돌봄 전체 여정</b><span>care_circle + care_routine · 초대→요약→활동 부재→가족 응답</span></button>
 
   <button class="reset" onclick="resetChat()">대화 초기화</button>
   <div class="endpoint" id="ep">http://127.0.0.1:9123/mcp</div>
@@ -294,6 +296,42 @@ async function step8(){
   r=await callTool("health_facility",{user_id:"demo",action:"notify",nickname:"순자",region:"마포"});
   botName("돌봄톡 · 정기 알림");
   if(r.message_json) renderTemplate(r.message_json);
+}
+async function step9(){
+  const suffix=String(Date.now());
+  const senior="senior_demo_"+suffix;
+  const family="family_demo_"+suffix;
+  const now=new Date();
+  const clockParts=new Intl.DateTimeFormat("en-GB",{timeZone:"Asia/Seoul",hour:"2-digit",minute:"2-digit",hourCycle:"h23"}).formatToParts(now);
+  const values=Object.fromEntries(clockParts.map(p=>[p.type,p.value]));
+  const slot=values.hour+":"+values.minute;
+  const past=new Date(now.getTime()-9*60*60*1000).toISOString();
+
+  botName("돌봄톡 · 동의 기반 가족 연결");
+  const invite=await callTool("care_circle",{action:"create_invite",requester_user_id:senior,senior_user_id:senior,nickname:"순자",circle_name:"순자님 돌봄",senior_consented:true});
+  const joined=await callTool("care_circle",{action:"join",requester_user_id:family,invite_code:invite.invite_code,nickname:"딸"});
+  botText("순자님이 만든 일회용 코드로 딸 계정 1명을 연결했어요.\n공유: "+joined.permissions.join(" · "));
+
+  await callTool("care_routine",{action:"configure",requester_user_id:senior,senior_user_id:senior,prompt_times:slot,digest_times:slot,inactivity_hours:8,escalation_hours:12,inactivity_grace_minutes:30,quiet_start:"00:00",quiet_end:"00:00",senior_consented:true});
+  await callTool("care_routine",{action:"record_activity",requester_user_id:senior,senior_user_id:senior,event_type:"screen_unlock",source:"demo",occurred_at:past});
+  await callTool("care_routine",{action:"record_activity",requester_user_id:senior,senior_user_id:senior,event_type:"device_motion",source:"demo",occurred_at:past});
+  const first=await callTool("care_routine",{action:"run_due",requester_user_id:senior,senior_user_id:senior,now:now.toISOString()});
+  botText("예약 시각 "+slot+"\n어르신 질문과 가족 요약을 한 번씩 준비했어요.\n휴대폰 활동이 9시간 없어 먼저 본인 확인을 요청했어요.");
+  quickReplies([
+    {label:"저는 괜찮아요",messageText:"저는 괜찮아요"},
+    {label:"휴대폰을 두고 왔어요",messageText:"휴대폰을 두고 왔어요"},
+    {label:"도움이 필요해요",messageText:"도움이 필요해요"}
+  ]);
+
+  const later=new Date(now.getTime()+31*60*1000);
+  const follow=await callTool("care_routine",{action:"run_due",requester_user_id:senior,senior_user_id:senior,now:later.toISOString()});
+  const notice=(follow.queued_events||[]).find(e=>e.event_type==="inactivity_notice");
+  botName("돌봄톡 · 연결된 가족");
+  botText((notice&&notice.preview)||"본인 확인 뒤에도 변화가 없어 가족에게 안부 확인을 요청했어요.",true);
+  if(notice){
+    const ack=await callTool("care_routine",{action:"acknowledge",requester_user_id:family,senior_user_id:senior,outbox_id:notice.outbox_id,response:"전화해볼게요"});
+    botText("딸의 응답 수취: "+ack.response_label+"\n위치·화면 내용·원문 대화는 공유하지 않았어요.");
+  }
 }
 </script>
 </body>

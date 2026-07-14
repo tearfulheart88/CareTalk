@@ -539,6 +539,14 @@ def analyze_checkin_response(
         1 if danger_detected else 0
     ))
 
+    # 카카오 안부 응답 자체가 명확한 휴대폰 상호작용이므로, 아직 발송되지 않은
+    # 활동 부재 확인과 가족 안내는 즉시 취소한다.
+    cursor.execute("""
+        UPDATE care_outbox SET status = 'cancelled'
+        WHERE senior_user_id = ? AND status = 'pending'
+          AND event_type IN ('activity_check', 'inactivity_notice')
+    """, (user_id,))
+
     conn.commit()
     conn.close()
 
