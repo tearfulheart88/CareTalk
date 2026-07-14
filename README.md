@@ -197,11 +197,12 @@ Git 소스 빌드 입력값:
 
 ```powershell
 docker build -t caretalk .
-docker run --rm -p 9000:9000 -e MOCK_MODE=true caretalk
+docker run --rm -p 9000:8000 -e MOCK_MODE=true caretalk
 ```
 
-컨테이너는 non-root 사용자로 실행되고 `/health`를 점검합니다. 배포 플랫폼이 `PORT`를
-주입하면 그 값을 사용하며, 없으면 9000 포트를 사용합니다.
+컨테이너는 non-root 사용자로 실행되고 `/health`를 점검합니다. 컨테이너 내부 기본 포트는
+PlayMCP in KC 기본값과 같은 8000이며, 배포 플랫폼이 `PORT`를 주입하면 그 값을 사용합니다.
+로컬에서 `python server.py`로 직접 실행할 때의 기본 포트는 9000입니다.
 
 Secret 저장을 지원하는 별도 호스팅에서만 `MOCK_MODE=false`, `LIVE_API_ENABLED=true`와
 `OPENAI_API_KEY`를 서버 환경변수로 설정하세요. 키를 Docker build argument로 전달하지 마세요.
